@@ -61,23 +61,21 @@ class UnicodeRendererSourceTests(unittest.TestCase):
 
     def test_native_transform_probe_preserves_animation_geometry(self):
         payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
-        self.assertIn("FPILOT_UNICODE_TRANSFORM_MODE", payload)
-        self.assertIn("NativeTransformProbe = 2", payload)
+        self.assertNotIn("FPILOT_UNICODE_TRANSFORM_MODE", payload)
+        self.assertIn("kNativeTransformProbe = 2", payload)
         self.assertIn("UnicodeNativeQuadHook", payload)
         self.assertIn("kNativeTransformProbeBasis = 4096", payload)
         self.assertIn("ApplyPacketTransform", payload)
         self.assertIn("CoalesceCapturedPacket", payload)
-        self.assertIn("NativeMarkerProbe", payload)
 
-    def test_native_renderer_ab_modes_are_explicit(self):
+    def test_shaped_glyph_renderer_is_the_only_production_mode(self):
         payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
         self.assertNotIn("FPILOT_UNICODE_RENDERER", payload)
-        self.assertIn("FPILOT_UNICODE_NATIVE_MODE", payload)
-        self.assertIn("NativeRendererRowTexture = 1", payload)
-        self.assertIn("NativeRendererShapedGlyphs = 2", payload)
-        self.assertIn("NativeRendererCustomCommand = 4", payload)
+        self.assertNotIn("FPILOT_UNICODE_NATIVE_MODE", payload)
+        self.assertNotIn("DrawD3DAtlasRowInline", payload)
+        self.assertNotIn("SubmitCustomNativeCommand", payload)
+        self.assertIn("kNativeRendererShapedGlyphs = 2", payload)
         self.assertIn("DrawD3DShapedGlyphsInline", payload)
-        self.assertIn("SubmitCustomNativeCommand", payload)
         self.assertIn("InlineScissor", payload)
         self.assertNotIn("DrawOverlayQueue", payload)
 
@@ -158,7 +156,6 @@ class UnicodePatchRegressionTests(unittest.TestCase):
         self.assertEqual(self.layout.d3d_renderer_global, 0x1402474D8)
         self.assertEqual(self.layout.native_quad_emitter, 0x1401B9B50)
         self.assertEqual(self.layout.native_quad_call_site, 0x1401B8F9C)
-        self.assertEqual(self.layout.native_command_allocator, 0x1401B99C0)
         self.assertEqual(self.layout.d3d_draw_batch, 0x14004A690)
         self.assertEqual(self.layout.d3d_draw_batch_call_sites,
                          (0x140049B30, 0x140049C37))
@@ -205,28 +202,20 @@ class UnicodePatchRegressionTests(unittest.TestCase):
                 self.original.image_base + unicode_section.rva + unicode_section.vsize,
                 f"Unicode hook at 0x{site:x} targets 0x{destination:x}")
 
-    def test_emitted_unicode_manifest_describes_native_ab_renderers(self):
+    def test_emitted_unicode_manifest_fixes_the_shaped_glyph_renderer(self):
         output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"
         manifest_path = Path(str(output_path) + ".unicode.json")
         if not manifest_path.exists():
             raise unittest.SkipTest("combined Unicode manifest has not been built")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["unicode"]["renderer"], "native-inline-d3d-atlas")
-        self.assertEqual(manifest["unicode"]["renderer_selection"], "environment")
-        self.assertEqual(manifest["unicode"]["renderer_selector"],
-                         "FPILOT_UNICODE_NATIVE_MODE")
-        self.assertEqual(manifest["unicode"]["renderer_modes"], {
-            "row-texture": 1,
-            "shaped-glyph": 2,
-            "custom-command": 4,
-        })
-        self.assertEqual(manifest["unicode"]["transform_selector"],
-                         "FPILOT_UNICODE_TRANSFORM_MODE")
-        self.assertEqual(manifest["unicode"]["transform_default"], "native-probe")
-        self.assertEqual(manifest["unicode"]["transform_modes"], {
-            "legacy": 1,
-            "native-probe": 2,
-        })
+        self.assertEqual(manifest["unicode"]["renderer"], "shaped-glyph")
+        self.assertEqual(manifest["unicode"]["renderer_selection"], "fixed")
+        self.assertEqual(manifest["unicode"]["transform"], "native-probe")
+        self.assertEqual(manifest["unicode"]["transform_selection"], "fixed")
+        self.assertNotIn("renderer_selector", manifest["unicode"])
+        self.assertNotIn("renderer_modes", manifest["unicode"])
+        self.assertNotIn("transform_selector", manifest["unicode"])
+        self.assertNotIn("transform_modes", manifest["unicode"])
 
     def test_all_release_manifest_has_every_requested_patch(self):
         output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"

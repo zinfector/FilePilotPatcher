@@ -47,14 +47,13 @@ struct UnicodeBindings {
     unsigned long long originalD3DRenderFrame;
     unsigned long long d3dRendererGlobal;
     unsigned long long originalNativeQuadEmitter;
-    unsigned long long originalNativeCommandAllocator;
     unsigned long long originalD3DDrawBatch;
     unsigned long long nativeRenderDataGlobal;
 };
 
 static constexpr unsigned long long kUnicodeBindingsMagic =
     0x53474e4942555046ULL; // "FPUBINGS"
-static constexpr unsigned long long kUnicodeBindingsVersion = 5;
+static constexpr unsigned long long kUnicodeBindingsVersion = 6;
 
 extern "C" __declspec(dllexport) volatile UnicodeBindings Bindings = {
     kUnicodeBindingsMagic, kUnicodeBindingsVersion, sizeof(UnicodeBindings)
@@ -103,16 +102,8 @@ enum ExperimentFlags : unsigned int {
     ExperimentNativeInline = 1u << 6,
 };
 
-enum NativeRendererMode : unsigned int {
-    NativeRendererRowTexture = 1,
-    NativeRendererShapedGlyphs = 2,
-    NativeRendererCustomCommand = 4,
-};
-
-enum NativeTransformMode : unsigned int {
-    NativeTransformLegacy = 1,
-    NativeTransformProbe = 2,
-};
+static constexpr unsigned int kNativeRendererShapedGlyphs = 2;
+static constexpr unsigned int kNativeTransformProbe = 2;
 
 struct UnicodeExperimentState {
     unsigned int version;
@@ -169,8 +160,6 @@ extern "C" __declspec(dllexport) volatile UnicodeExperimentState UnicodeExperime
 };
 
 static volatile LONG g_d3dReady;
-static volatile LONG g_nativeRendererMode;
-static volatile LONG g_nativeTransformMode;
 
 using VirtualProtectFn = BOOL (WINAPI *)(LPVOID, SIZE_T, DWORD, PDWORD);
 
@@ -184,54 +173,6 @@ static bool WideEqualsAscii(const wchar_t *wide, const char *ascii) {
         if (left != static_cast<wchar_t>(right)) return false;
     }
     return wide[index] == 0 && ascii[index] == 0;
-}
-
-using GetEnvironmentVariableWFn = DWORD (WINAPI *)(LPCWSTR, LPWSTR, DWORD);
-
-static NativeRendererMode ResolveNativeRendererMode() {
-    LONG cached = _InterlockedCompareExchange(&g_nativeRendererMode, 0, 0);
-    if (cached != 0) return static_cast<NativeRendererMode>(cached);
-    NativeRendererMode selected = NativeRendererRowTexture;
-    HMODULE kernel32 = pLoadLibraryW()(L"kernel32.dll");
-    auto getEnvironmentVariable = kernel32 ? reinterpret_cast<GetEnvironmentVariableWFn>(
-        pGetProcAddress()(kernel32, "GetEnvironmentVariableW")) : nullptr;
-    wchar_t value[32] = {};
-    if (getEnvironmentVariable &&
-        getEnvironmentVariable(L"FPILOT_UNICODE_NATIVE_MODE", value, ARRAY_COUNT(value))) {
-        if (WideEqualsAscii(value, "glyph") || WideEqualsAscii(value, "shaped-glyph"))
-            selected = NativeRendererShapedGlyphs;
-        else if (WideEqualsAscii(value, "command") ||
-                 WideEqualsAscii(value, "custom-command"))
-            selected = NativeRendererCustomCommand;
-    }
-    _InterlockedCompareExchange(
-        &g_nativeRendererMode, static_cast<LONG>(selected), 0);
-    selected = static_cast<NativeRendererMode>(
-        _InterlockedCompareExchange(&g_nativeRendererMode, 0, 0));
-    UnicodeExperiment.nativeRendererMode = selected;
-    UnicodeExperiment.flags |= ExperimentNativeInline;
-    return selected;
-}
-
-static NativeTransformMode ResolveNativeTransformMode() {
-    LONG cached = _InterlockedCompareExchange(&g_nativeTransformMode, 0, 0);
-    if (cached != 0) return static_cast<NativeTransformMode>(cached);
-    NativeTransformMode selected = NativeTransformProbe;
-    HMODULE kernel32 = pLoadLibraryW()(L"kernel32.dll");
-    auto getEnvironmentVariable = kernel32 ? reinterpret_cast<GetEnvironmentVariableWFn>(
-        pGetProcAddress()(kernel32, "GetEnvironmentVariableW")) : nullptr;
-    wchar_t value[32] = {};
-    if (getEnvironmentVariable && getEnvironmentVariable(
-            L"FPILOT_UNICODE_TRANSFORM_MODE", value, ARRAY_COUNT(value))) {
-        if (WideEqualsAscii(value, "legacy") || WideEqualsAscii(value, "static"))
-            selected = NativeTransformLegacy;
-    }
-    _InterlockedCompareExchange(
-        &g_nativeTransformMode, static_cast<LONG>(selected), 0);
-    selected = static_cast<NativeTransformMode>(
-        _InterlockedCompareExchange(&g_nativeTransformMode, 0, 0));
-    UnicodeExperiment.nativeTransformMode = selected;
-    return selected;
 }
 
 static unsigned int FloatBits(float value) {
@@ -1190,7 +1131,6 @@ struct OverlayPacket {
     unsigned int textLength;
     unsigned long long textHash;
     unsigned int generation;
-    NativeRendererMode mode;
     NativeAffineTransform transform;
     bool active;
     bool consumed;
@@ -1209,7 +1149,6 @@ static unsigned int g_overlayWriteQueue;
 static volatile LONG g_overlayGeneration;
 
 static constexpr unsigned int kNativeDrawMarkerMagic = 0x46504e55; // "UNPF"
-static constexpr unsigned int kNativeProbeMarkerMagic = 0x42525055; // "UPRB"
 static constexpr unsigned int kNativeMarkerCheck = 0xa9d31e47;
 static constexpr unsigned int kNativeInstanceBytes = 0x48;
 static constexpr unsigned int kNativeMarkerOffset = 0x30;
@@ -1241,7 +1180,6 @@ static bool SameOverlayText(const wchar_t *left, const wchar_t *right,
 static bool EnqueueInlinePacket(const float *font, const int *rectangle,
                                 const NativeStringView &text,
                                 const unsigned long long *color, const float *options,
-                                NativeRendererMode mode, bool captureTransform,
                                 unsigned int &token,
                                 unsigned int &generation, bool &created) {
     created = false;
@@ -1266,35 +1204,12 @@ static bool EnqueueInlinePacket(const float *font, const int *rectangle,
     candidate.fontFamily = style.family;
     candidate.textLength = wide.length;
     candidate.textHash = HashWideText(wide.data, wide.length);
-    candidate.mode = mode;
     candidate.active = true;
 
     LockOverlayQueue();
     OverlayQueue &queue = g_overlayQueues[g_overlayWriteQueue];
-    // Reuse immutable packet data, but still submit a marker for every native
-    // command instance. This bounds conversion/copy work without changing draw
-    // order or collapsing selection/color transitions.
-    for (unsigned int index = captureTransform ? 0 : queue.packetCount; index > 0; --index) {
-        OverlayPacket &queued = queue.packets[index - 1];
-        bool same = queued.active && queued.mode == candidate.mode &&
-            queued.alignX == candidate.alignX && queued.alignY == candidate.alignY &&
-            queued.nativeHeight == candidate.nativeHeight &&
-            queued.emSize == candidate.emSize && queued.fontFamily == candidate.fontFamily &&
-            queued.textHash == candidate.textHash && queued.textLength == candidate.textLength;
-        for (unsigned int component = 0; component < 4 && same; ++component) {
-            same = queued.rectangle[component] == candidate.rectangle[component] &&
-                queued.color[component] == candidate.color[component];
-        }
-        if (!same || !SameOverlayText(
-                queue.text + queued.textOffset, wide.data, wide.length)) continue;
-        token = (g_overlayWriteQueue << 16) | (index - 1);
-        generation = queued.generation;
-        UnicodeExperiment.overlayCoalesced++;
-        UnicodeExperiment.overlayQueued++;
-        UnlockOverlayQueue();
-        ReleaseWide(wide);
-        return true;
-    }
+    // Every packet captures File Pilot's current affine transform before it can
+    // be compared with earlier submissions. Coalescing happens after capture.
     if (queue.packetCount >= kOverlayPacketCount ||
         queue.textLength + wide.length + 1 > kOverlayTextUnits) {
         UnlockOverlayQueue();
@@ -1371,7 +1286,7 @@ static bool CoalesceCapturedPacket(unsigned int &token, unsigned int &generation
     }
     for (unsigned int index = packetIndex; index > 0; --index) {
         OverlayPacket &queued = queue.packets[index - 1];
-        bool same = queued.active && queued.mode == packet->mode &&
+        bool same = queued.active &&
             queued.alignX == packet->alignX && queued.alignY == packet->alignY &&
             queued.nativeHeight == packet->nativeHeight && queued.emSize == packet->emSize &&
             queued.fontFamily == packet->fontFamily && queued.textHash == packet->textHash &&
@@ -1400,15 +1315,13 @@ static bool CoalesceCapturedPacket(unsigned int &token, unsigned int &generation
 enum NativeMarkerKind : unsigned int {
     NativeMarkerNone,
     NativeMarkerDraw,
-    NativeMarkerProbe,
 };
 
 static void WriteNativeMarker(void *instance, unsigned int token,
-                              unsigned int generation, NativeMarkerKind kind) {
+                              unsigned int generation) {
     auto marker = reinterpret_cast<unsigned int *>(
         static_cast<unsigned char *>(instance) + kNativeMarkerOffset);
-    marker[0] = kind == NativeMarkerProbe
-        ? kNativeProbeMarkerMagic : kNativeDrawMarkerMagic;
+    marker[0] = kNativeDrawMarkerMagic;
     marker[1] = token;
     marker[2] = generation;
     marker[3] = kNativeMarkerCheck ^ token ^ generation;
@@ -1419,16 +1332,13 @@ static NativeMarkerKind ReadNativeMarker(const void *instance, unsigned int &tok
     auto marker = reinterpret_cast<const unsigned int *>(
         static_cast<const unsigned char *>(instance) + kNativeMarkerOffset);
     NativeMarkerKind kind = marker[0] == kNativeDrawMarkerMagic
-        ? NativeMarkerDraw : marker[0] == kNativeProbeMarkerMagic
-            ? NativeMarkerProbe : NativeMarkerNone;
+        ? NativeMarkerDraw : NativeMarkerNone;
     if (kind == NativeMarkerNone) return kind;
     token = marker[1];
     generation = marker[2];
     return marker[3] == (kNativeMarkerCheck ^ token ^ generation)
         ? kind : NativeMarkerNone;
 }
-
-static unsigned char g_customCommandResourceMarker;
 
 static unsigned long long *NativeRenderData() {
     if (!Bindings.nativeRenderDataGlobal) return nullptr;
@@ -1540,34 +1450,28 @@ extern "C" __declspec(dllexport) void __fastcall UnicodeNativeQuadHook(
     packet.transform = transform;
     g_nativeQuadCapture.instance = instance;
     g_nativeQuadCapture.captured = true;
-    WriteNativeMarker(instance, g_nativeQuadCapture.token,
-                      g_nativeQuadCapture.generation, NativeMarkerProbe);
 }
 
 static bool SubmitNativeTextCarrier(
     unsigned long long *arena, float *font, int *rectangle, const float *options,
-    unsigned int &token, unsigned int &generation, bool captureTransform,
-    bool probeOnly) {
+    unsigned int &token, unsigned int &generation) {
     using OriginalFn = void (__fastcall *)(unsigned long long *, float *, int *,
         const NativeStringView *, unsigned long long *, float *);
     unsigned long long *renderData = NativeRenderData();
     if (!renderData) return false;
     unsigned long long before = renderData[0x1b]; // +0xd8 instance count
     const wchar_t *packetText = nullptr;
-    OverlayPacket *packet = captureTransform
-        ? FindInlinePacket(token, generation, packetText) : nullptr;
-    if (captureTransform && !packet) return false;
-    if (captureTransform) {
-        if (_InterlockedCompareExchange(&g_nativeQuadCapture.active, -1, 0) != 0)
-            return false;
-        g_nativeQuadCapture.threadId = NativeCurrentThreadId();
-        g_nativeQuadCapture.packet = packet;
-        g_nativeQuadCapture.token = token;
-        g_nativeQuadCapture.generation = generation;
-        g_nativeQuadCapture.instance = nullptr;
-        g_nativeQuadCapture.captured = false;
-        _InterlockedExchange(&g_nativeQuadCapture.active, 1);
-    }
+    OverlayPacket *packet = FindInlinePacket(token, generation, packetText);
+    if (!packet) return false;
+    if (_InterlockedCompareExchange(&g_nativeQuadCapture.active, -1, 0) != 0)
+        return false;
+    g_nativeQuadCapture.threadId = NativeCurrentThreadId();
+    g_nativeQuadCapture.packet = packet;
+    g_nativeQuadCapture.token = token;
+    g_nativeQuadCapture.generation = generation;
+    g_nativeQuadCapture.instance = nullptr;
+    g_nativeQuadCapture.captured = false;
+    _InterlockedExchange(&g_nativeQuadCapture.active, 1);
     static const char markerByte[] = ".";
     NativeStringView markerText = {markerByte, 1};
     float transparent[4] = {};
@@ -1575,7 +1479,7 @@ static bool SubmitNativeTextCarrier(
         arena, font, rectangle, &markerText,
         reinterpret_cast<unsigned long long *>(transparent),
         const_cast<float *>(options));
-    if (captureTransform) _InterlockedExchange(&g_nativeQuadCapture.active, 0);
+    _InterlockedExchange(&g_nativeQuadCapture.active, 0);
 
     renderData = NativeRenderData();
     if (!renderData) return false;
@@ -1583,54 +1487,18 @@ static bool SubmitNativeTextCarrier(
     auto instances = reinterpret_cast<unsigned char *>(renderData[0x1d]); // +0xe8
     if (!instances || after != before + 1) return false;
     unsigned char *instance = instances + before * kNativeInstanceBytes;
-    if (captureTransform) {
-        bool captured = g_nativeQuadCapture.captured &&
-            g_nativeQuadCapture.instance == instance && packet && packet->transform.valid;
-        if (!captured) {
-            UnicodeExperiment.nativeTransformFailures++;
-            return false;
-        }
-        UnicodeExperiment.nativeTransformCaptures++;
-        unsigned long long residualBits = FloatBits(packet->transform.residual);
-        if (residualBits > UnicodeExperiment.nativeTransformMaxResidualBits)
-            UnicodeExperiment.nativeTransformMaxResidualBits = residualBits;
-        CoalesceCapturedPacket(token, generation, packet);
-        WriteNativeMarker(instance, token, generation,
-                          probeOnly ? NativeMarkerProbe : NativeMarkerDraw);
-        if (probeOnly) UnicodeExperiment.nativeProbeMarkers++;
-        else UnicodeExperiment.nativeMarkersSubmitted++;
-        return true;
-    }
-    WriteNativeMarker(instance, token, generation, NativeMarkerDraw);
-    UnicodeExperiment.nativeMarkersSubmitted++;
-    return true;
-}
-
-static bool SubmitCustomNativeCommand(unsigned int token, unsigned int generation) {
-    using AllocateCommandFn = unsigned long long *(__fastcall *)(unsigned int);
-    unsigned long long *renderData = NativeRenderData();
-    if (!renderData || !Bindings.originalNativeCommandAllocator) return false;
-    unsigned long long count = renderData[0x1b];
-    unsigned long long capacity = renderData[0x1c];
-    auto instances = reinterpret_cast<unsigned char *>(renderData[0x1d]);
-    if (!instances || count >= capacity || count > 0xffffffffULL) return false;
-
-    unsigned char *marker = instances + count * kNativeInstanceBytes;
-    memset(marker, 0, kNativeInstanceBytes);
-    WriteNativeMarker(marker, token, generation, NativeMarkerDraw);
-    renderData[0x1b] = count + 1;
-    auto command = reinterpret_cast<AllocateCommandFn>(
-        Bindings.originalNativeCommandAllocator)(0);
-    if (!command) {
-        renderData[0x1b] = count;
+    bool captured = g_nativeQuadCapture.captured &&
+        g_nativeQuadCapture.instance == instance && packet->transform.valid;
+    if (!captured) {
+        UnicodeExperiment.nativeTransformFailures++;
         return false;
     }
-    *reinterpret_cast<unsigned int *>(reinterpret_cast<unsigned char *>(command) + 0x10) = 1;
-    *reinterpret_cast<unsigned int *>(reinterpret_cast<unsigned char *>(command) + 0x14) =
-        static_cast<unsigned int>(count);
-    *reinterpret_cast<void **>(reinterpret_cast<unsigned char *>(command) + 0x18) =
-        &g_customCommandResourceMarker;
-    UnicodeExperiment.customCommandsSubmitted++;
+    UnicodeExperiment.nativeTransformCaptures++;
+    unsigned long long residualBits = FloatBits(packet->transform.residual);
+    if (residualBits > UnicodeExperiment.nativeTransformMaxResidualBits)
+        UnicodeExperiment.nativeTransformMaxResidualBits = residualBits;
+    CoalesceCapturedPacket(token, generation, packet);
+    WriteNativeMarker(instance, token, generation);
     UnicodeExperiment.nativeMarkersSubmitted++;
     return true;
 }
@@ -1891,25 +1759,8 @@ static GlyphCacheEntry *FindOrCreateGlyphEntry(
     return &entry;
 }
 
-// The D3D-atlas renderer uses DirectWrite only to shape and rasterize masks. Screen
-// compositing stays on File Pilot's immediate D3D11 context, which preserves
-// command order with the native frame and avoids unsynchronized DXGI access.
-struct D3DAtlasEntry {
-    unsigned long long hash;
-    unsigned long long stamp;
-    float emSize;
-    float maximumWidth;
-    float layoutWidth;
-    float layoutHeight;
-    NativeFontFamily fontFamily;
-    unsigned int textLength;
-    wchar_t text[kOverlayTextLimit + 1];
-    RECT bounds;
-    ID3D11ShaderResourceView *view;
-};
-
-static constexpr unsigned int kD3DAtlasCacheEntries = 128;
-static D3DAtlasEntry g_d3dAtlasCache[kD3DAtlasCacheEntries];
+// DirectWrite shapes text and rasterizes individual glyph masks into a shared
+// atlas. Compositing stays on File Pilot's immediate D3D11 command stream.
 static ID3D11Device *g_d3dAtlasDevice;
 static ID3D11VertexShader *g_d3dAtlasVertexShader;
 static ID3D11PixelShader *g_d3dAtlasPixelShader;
@@ -1949,11 +1800,6 @@ static unsigned int g_d3dGlyphAtlasRowHeight;
 static unsigned int g_d3dGlyphAtlasGeneration = 1;
 static D3DGlyphAtlasEntry *g_d3dGlyphPacketEntries[kGlyphCacheGlyphs];
 
-static void ReleaseD3DAtlasEntry(D3DAtlasEntry &entry) {
-    if (entry.view) entry.view->Release();
-    entry = {};
-}
-
 static void ReleaseD3DAtlasTarget() {
     _InterlockedExchange(&g_d3dAtlasOperational, 0);
     UnicodeExperiment.flags &= ~ExperimentD3DAtlasReady;
@@ -1985,8 +1831,6 @@ static void ReleaseD3DGlyphAtlas() {
 static void ReleaseD3DAtlasPipeline() {
     ReleaseD3DAtlasTarget();
     ReleaseD3DGlyphAtlas();
-    for (unsigned int index = 0; index < kD3DAtlasCacheEntries; ++index)
-        ReleaseD3DAtlasEntry(g_d3dAtlasCache[index]);
     if (g_d3dAtlasDepthStencil) g_d3dAtlasDepthStencil->Release();
     if (g_d3dAtlasRasterizer) g_d3dAtlasRasterizer->Release();
     if (g_d3dAtlasBlend) g_d3dAtlasBlend->Release();
@@ -2282,183 +2126,6 @@ static D3DGlyphAtlasEntry *FindOrCreateD3DGlyph(
     return &entry;
 }
 
-static void ReleaseGlyphAnalyses(IDWriteGlyphRunAnalysis **analyses) {
-    for (unsigned int index = 0; index < kGlyphCacheRuns; ++index)
-        if (analyses[index]) analyses[index]->Release();
-}
-
-static D3DAtlasEntry *FindOrCreateD3DAtlasEntry(
-    const wchar_t *text, const OverlayPacket &packet) {
-    float maximumWidth = static_cast<float>(packet.rectangle[2] - packet.rectangle[0]);
-    for (unsigned int index = 0; index < kD3DAtlasCacheEntries; ++index) {
-        D3DAtlasEntry &entry = g_d3dAtlasCache[index];
-        if (entry.hash == packet.textHash && entry.textLength == packet.textLength &&
-            entry.emSize == packet.emSize && entry.maximumWidth == maximumWidth &&
-            entry.fontFamily == packet.fontFamily &&
-            SameText(entry.text, text, packet.textLength)) {
-            entry.stamp = ++g_cacheStamp;
-            UnicodeExperiment.d3dAtlasCacheHits++;
-            return &entry;
-        }
-    }
-    UnicodeExperiment.d3dAtlasCacheMisses++;
-    if (!g_d3dAtlasDevice || !EnsureDWriteFactory()) return nullptr;
-    GlyphCacheEntry *glyphs = FindOrCreateGlyphEntry(
-        text, packet.textLength, packet, true);
-    if (!glyphs) return nullptr;
-
-    IDWriteGlyphRunAnalysis *analyses[kGlyphCacheRuns] = {};
-    RECT runBounds[kGlyphCacheRuns] = {};
-    RECT bounds = {};
-    bool haveBounds = false;
-    HRESULT status = S_OK;
-    for (unsigned int index = 0; index < glyphs->runCount; ++index) {
-        const GlyphRunRecord &record = glyphs->runs[index];
-        DWRITE_GLYPH_RUN run = {};
-        run.fontFace = record.fontFace;
-        run.fontEmSize = record.emSize;
-        run.glyphCount = record.glyphCount;
-        run.glyphIndices = glyphs->glyphIndices + record.glyphStart;
-        run.glyphAdvances = record.hasAdvances
-            ? glyphs->glyphAdvances + record.glyphStart : nullptr;
-        run.glyphOffsets = record.hasOffsets
-            ? glyphs->glyphOffsets + record.glyphStart : nullptr;
-        run.isSideways = record.isSideways;
-        run.bidiLevel = record.bidiLevel;
-        status = g_dwriteFactory->CreateGlyphRunAnalysis(
-            &run, 1.0f, nullptr, DWRITE_RENDERING_MODE_NATURAL,
-            record.measuringMode, record.baselineX, record.baselineY, &analyses[index]);
-        if (status < 0 || !analyses[index]) break;
-        status = analyses[index]->GetAlphaTextureBounds(
-            DWRITE_TEXTURE_CLEARTYPE_3x1, &runBounds[index]);
-        if (status < 0) break;
-        const RECT &current = runBounds[index];
-        if (current.right <= current.left || current.bottom <= current.top) continue;
-        if (!haveBounds) {
-            bounds = current;
-            haveBounds = true;
-        } else {
-            if (current.left < bounds.left) bounds.left = current.left;
-            if (current.top < bounds.top) bounds.top = current.top;
-            if (current.right > bounds.right) bounds.right = current.right;
-            if (current.bottom > bounds.bottom) bounds.bottom = current.bottom;
-        }
-    }
-    if (status < 0 || !haveBounds) {
-        UnicodeExperiment.lastD3DAtlasStatus = status;
-        UnicodeExperiment.d3dAtlasFailures++;
-        ReleaseGlyphAnalyses(analyses);
-        return nullptr;
-    }
-
-    unsigned int width = static_cast<unsigned int>(bounds.right - bounds.left);
-    unsigned int height = static_cast<unsigned int>(bounds.bottom - bounds.top);
-    if (!width || !height || width > 4096 || height > 256) {
-        UnicodeExperiment.lastD3DAtlasStatus = E_INVALIDARG;
-        UnicodeExperiment.d3dAtlasFailures++;
-        ReleaseGlyphAnalyses(analyses);
-        return nullptr;
-    }
-    SIZE_T coverageBytes = static_cast<SIZE_T>(width) * height;
-    auto coverage = static_cast<unsigned char *>(pVirtualAlloc()(
-        nullptr, coverageBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
-    if (!coverage) {
-        UnicodeExperiment.lastD3DAtlasStatus = E_OUTOFMEMORY;
-        UnicodeExperiment.d3dAtlasFailures++;
-        ReleaseGlyphAnalyses(analyses);
-        return nullptr;
-    }
-    memset(coverage, 0, coverageBytes);
-    for (unsigned int index = 0; index < glyphs->runCount && status >= 0; ++index) {
-        const RECT &current = runBounds[index];
-        if (!analyses[index] || current.right <= current.left || current.bottom <= current.top)
-            continue;
-        unsigned int runWidth = static_cast<unsigned int>(current.right - current.left);
-        unsigned int runHeight = static_cast<unsigned int>(current.bottom - current.top);
-        SIZE_T alphaBytes = static_cast<SIZE_T>(runWidth) * runHeight * 3;
-        auto alpha = static_cast<unsigned char *>(pVirtualAlloc()(
-            nullptr, alphaBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
-        if (!alpha) {
-            status = E_OUTOFMEMORY;
-            break;
-        }
-        status = analyses[index]->CreateAlphaTexture(
-            DWRITE_TEXTURE_CLEARTYPE_3x1, &current, alpha,
-            static_cast<UINT32>(alphaBytes));
-        if (status >= 0) {
-            unsigned int destinationX = static_cast<unsigned int>(current.left - bounds.left);
-            unsigned int destinationY = static_cast<unsigned int>(current.top - bounds.top);
-            for (unsigned int y = 0; y < runHeight; ++y) {
-                for (unsigned int x = 0; x < runWidth; ++x) {
-                    // The native bitmap target is BGRA and File Pilot copies its first
-                    // byte (blue coverage). DirectWrite alpha textures are RGB, so B is
-                    // the third byte here.
-                    unsigned char sample = alpha[(static_cast<SIZE_T>(y) * runWidth + x) * 3 + 2];
-                    unsigned char &destination = coverage[
-                        static_cast<SIZE_T>(destinationY + y) * width + destinationX + x];
-                    if (sample > destination) destination = sample;
-                }
-            }
-        }
-        pVirtualFree()(alpha, 0, MEM_RELEASE);
-    }
-    ReleaseGlyphAnalyses(analyses);
-    if (status < 0) {
-        pVirtualFree()(coverage, 0, MEM_RELEASE);
-        UnicodeExperiment.lastD3DAtlasStatus = status;
-        UnicodeExperiment.d3dAtlasFailures++;
-        return nullptr;
-    }
-
-    D3D11_TEXTURE2D_DESC textureDescription = {};
-    textureDescription.Width = width;
-    textureDescription.Height = height;
-    textureDescription.MipLevels = 1;
-    textureDescription.ArraySize = 1;
-    textureDescription.Format = DXGI_FORMAT_R8_UNORM;
-    textureDescription.SampleDesc.Count = 1;
-    textureDescription.Usage = D3D11_USAGE_IMMUTABLE;
-    textureDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    D3D11_SUBRESOURCE_DATA textureData = {};
-    textureData.pSysMem = coverage;
-    textureData.SysMemPitch = width;
-    ID3D11Texture2D *texture = nullptr;
-    ID3D11ShaderResourceView *view = nullptr;
-    status = g_d3dAtlasDevice->CreateTexture2D(
-        &textureDescription, &textureData, &texture);
-    if (status >= 0 && texture)
-        status = g_d3dAtlasDevice->CreateShaderResourceView(texture, nullptr, &view);
-    if (texture) texture->Release();
-    pVirtualFree()(coverage, 0, MEM_RELEASE);
-    UnicodeExperiment.lastD3DAtlasStatus = status;
-    if (status < 0 || !view) {
-        if (view) view->Release();
-        UnicodeExperiment.d3dAtlasFailures++;
-        return nullptr;
-    }
-
-    unsigned int victim = 0;
-    for (unsigned int index = 1; index < kD3DAtlasCacheEntries; ++index)
-        if (g_d3dAtlasCache[index].stamp < g_d3dAtlasCache[victim].stamp) victim = index;
-    D3DAtlasEntry &entry = g_d3dAtlasCache[victim];
-    ReleaseD3DAtlasEntry(entry);
-    entry.hash = packet.textHash;
-    entry.stamp = ++g_cacheStamp;
-    entry.emSize = packet.emSize;
-    entry.maximumWidth = maximumWidth;
-    entry.layoutWidth = glyphs->width;
-    entry.layoutHeight = glyphs->height;
-    entry.fontFamily = packet.fontFamily;
-    entry.textLength = packet.textLength;
-    memcpy(entry.text, text, packet.textLength * sizeof(wchar_t));
-    entry.text[packet.textLength] = 0;
-    entry.bounds = bounds;
-    entry.view = view;
-    UnicodeExperiment.d3dAtlasBuilds++;
-    UnicodeExperiment.d3dAtlasUploadBytes += coverageBytes;
-    return &entry;
-}
-
 static float ToNdcX(float value, const D3D11_VIEWPORT &viewport) {
     return ((value - viewport.TopLeftX) / viewport.Width) * 2.0f - 1.0f;
 }
@@ -2643,65 +2310,6 @@ static void BindD3DAtlasPipeline(ID3D11DeviceContext *context) {
     context->RSSetState(g_d3dAtlasRasterizer);
 }
 
-static bool DrawD3DAtlasRowInline(const OverlayPacket &packet, const wchar_t *text) {
-    if (!EnsureD3DAtlasReady()) return false;
-    auto renderer = *reinterpret_cast<unsigned long long **>(Bindings.d3dRendererGlobal);
-    auto context = renderer ? reinterpret_cast<ID3D11DeviceContext *>(renderer[9]) : nullptr;
-    if (!context) return false;
-    UINT viewportCount = 1;
-    D3D11_VIEWPORT viewport = {};
-    context->RSGetViewports(&viewportCount, &viewport);
-    if (!viewportCount || viewport.Width <= 0.0f || viewport.Height <= 0.0f) return false;
-
-    D3DAtlasEntry *entry = FindOrCreateD3DAtlasEntry(text, packet);
-    if (!entry || !entry->view) return false;
-    D3DAtlasSavedState savedState = {};
-    CaptureD3DAtlasState(context, savedState);
-    D3D11_RECT scissor = {};
-    bool visible = InlineScissor(packet, viewport, savedState, scissor);
-    if (!visible) {
-        RestoreD3DAtlasState(context, savedState);
-        return true;
-    }
-    BindD3DAtlasPipeline(context);
-
-    D2D1_POINT_2F origin = PacketOrigin(packet, entry->layoutWidth, entry->layoutHeight);
-    float left = origin.x + static_cast<float>(entry->bounds.left);
-    float top = origin.y + static_cast<float>(entry->bounds.top);
-    float right = origin.x + static_cast<float>(entry->bounds.right);
-    float bottom = origin.y + static_cast<float>(entry->bounds.bottom);
-    D2D1_POINT_2F topLeft = ApplyPacketTransform(packet, left, top);
-    D2D1_POINT_2F topRight = ApplyPacketTransform(packet, right, top);
-    D2D1_POINT_2F bottomLeft = ApplyPacketTransform(packet, left, bottom);
-    D2D1_POINT_2F bottomRight = ApplyPacketTransform(packet, right, bottom);
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    HRESULT status = context->Map(
-        g_d3dAtlasVertexBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    UnicodeExperiment.lastD3DAtlasStatus = status;
-    if (status >= 0 && mapped.pData) {
-        auto vertices = static_cast<D3DAtlasVertex *>(mapped.pData);
-        D2D1_COLOR_F color = PacketColor(packet);
-        SetD3DAtlasVertex(vertices[0], topLeft.x, topLeft.y, 0.0f, 0.0f, color, viewport);
-        SetD3DAtlasVertex(vertices[1], topRight.x, topRight.y, 1.0f, 0.0f, color, viewport);
-        SetD3DAtlasVertex(vertices[2], bottomLeft.x, bottomLeft.y, 0.0f, 1.0f, color, viewport);
-        SetD3DAtlasVertex(vertices[3], bottomLeft.x, bottomLeft.y, 0.0f, 1.0f, color, viewport);
-        SetD3DAtlasVertex(vertices[4], topRight.x, topRight.y, 1.0f, 0.0f, color, viewport);
-        SetD3DAtlasVertex(vertices[5], bottomRight.x, bottomRight.y, 1.0f, 1.0f, color, viewport);
-        context->Unmap(g_d3dAtlasVertexBuffer, 0);
-        context->RSSetScissorRects(1, &scissor);
-        context->PSSetShaderResources(0, 1, &entry->view);
-        context->Draw(6, 0);
-        UnicodeExperiment.d3dAtlasDrawCalls++;
-        UnicodeExperiment.overlayDrawn++;
-    } else {
-        UnicodeExperiment.d3dAtlasFailures++;
-    }
-    ID3D11ShaderResourceView *noView = nullptr;
-    context->PSSetShaderResources(0, 1, &noView);
-    RestoreD3DAtlasState(context, savedState);
-    return status >= 0;
-}
-
 static float GlyphAdvance(const GlyphCacheEntry &glyphs,
                           const GlyphRunRecord &record, unsigned int glyphOffset) {
     unsigned int glyph = record.glyphStart + glyphOffset;
@@ -2848,9 +2456,7 @@ static bool DrawD3DShapedGlyphsInline(const OverlayPacket &packet, const wchar_t
 
 static bool DrawInlinePacket(OverlayPacket &packet, const wchar_t *text) {
     unsigned long long started = PerformanceTicks();
-    bool drawn = packet.mode == NativeRendererShapedGlyphs
-        ? DrawD3DShapedGlyphsInline(packet, text)
-        : DrawD3DAtlasRowInline(packet, text);
+    bool drawn = DrawD3DShapedGlyphsInline(packet, text);
     unsigned long long ended = PerformanceTicks();
     if (ended >= started) UnicodeExperiment.drawMicroseconds +=
         TicksToMicroseconds(ended - started);
@@ -2867,14 +2473,10 @@ extern "C" __declspec(dllexport) void __fastcall UnicodeD3DDrawBatchHook(
     using OriginalFn = void (__fastcall *)(long long *, unsigned int, unsigned char *);
     auto original = reinterpret_cast<OriginalFn>(Bindings.originalD3DDrawBatch);
     if (!original || !count || !instances) {
-        if (original && resource != reinterpret_cast<long long *>(
-                &g_customCommandResourceMarker))
-            original(resource, count, instances);
+        if (original) original(resource, count, instances);
         return;
     }
 
-    bool customCommand = resource == reinterpret_cast<long long *>(
-        &g_customCommandResourceMarker);
     unsigned int nativeStart = 0;
     for (unsigned int index = 0; index < count; ++index) {
         unsigned char *instance = instances +
@@ -2883,7 +2485,7 @@ extern "C" __declspec(dllexport) void __fastcall UnicodeD3DDrawBatchHook(
         unsigned int generation = 0;
         NativeMarkerKind markerKind = ReadNativeMarker(instance, token, generation);
         if (markerKind == NativeMarkerNone) continue;
-        if (!customCommand && index > nativeStart) {
+        if (index > nativeStart) {
             original(resource, index - nativeStart,
                      instances + static_cast<unsigned long long>(nativeStart) *
                          kNativeInstanceBytes);
@@ -2903,7 +2505,7 @@ extern "C" __declspec(dllexport) void __fastcall UnicodeD3DDrawBatchHook(
         }
         nativeStart = index + 1;
     }
-    if (!customCommand && nativeStart < count)
+    if (nativeStart < count)
         original(resource, count - nativeStart,
                  instances + static_cast<unsigned long long>(nativeStart) *
                      kNativeInstanceBytes);
@@ -3010,35 +2612,19 @@ extern "C" __declspec(dllexport) void __fastcall UnicodeRenderTextHook(
     bool rendererReady = _InterlockedCompareExchange(&g_d3dReady, 0, 0) != 0 &&
         _InterlockedCompareExchange(&g_d3dAtlasOperational, 0, 0) != 0;
     if (complex && rendererReady) {
-        NativeRendererMode mode = ResolveNativeRendererMode();
-        NativeTransformMode transformMode = ResolveNativeTransformMode();
-        bool captureTransform = transformMode == NativeTransformProbe;
+        UnicodeExperiment.nativeRendererMode = kNativeRendererShapedGlyphs;
+        UnicodeExperiment.nativeTransformMode = kNativeTransformProbe;
+        UnicodeExperiment.flags |= ExperimentNativeInline;
         unsigned int token = 0;
         unsigned int generation = 0;
         bool packetCreated = false;
         if (EnqueueInlinePacket(
-                font, rectangle, *text, color, options, mode, captureTransform,
-                token, generation,
+                font, rectangle, *text, color, options, token, generation,
                 packetCreated)) {
             unsigned int cancellationToken = token;
             unsigned int cancellationGeneration = generation;
-            bool submitted = false;
-            if (mode == NativeRendererCustomCommand) {
-                if (captureTransform) submitted = SubmitNativeTextCarrier(
-                    arena, font, rectangle, options, token, generation, true, true);
-                if (submitted || !captureTransform)
-                    submitted = SubmitCustomNativeCommand(token, generation);
-                if (!submitted) {
-                    UnicodeExperiment.customCommandFallbacks++;
-                    submitted = SubmitNativeTextCarrier(
-                        arena, font, rectangle, options, token, generation,
-                        captureTransform, false);
-                }
-            } else {
-                submitted = SubmitNativeTextCarrier(
-                    arena, font, rectangle, options, token, generation,
-                    captureTransform, false);
-            }
+            bool submitted = SubmitNativeTextCarrier(
+                arena, font, rectangle, options, token, generation);
             if (submitted) return;
             if (packetCreated) CancelInlinePacket(
                 cancellationToken, cancellationGeneration);

@@ -12,7 +12,7 @@ The patch does not add grapheme-aware editing, normalization, locale-sensitive
 collation, or layered color-emoji composition. Those remain File Pilot or future
 renderer concerns.
 
-## Native-inline renderer A/B modes
+## Fixed native-inline shaped-glyph renderer
 
 DirectWrite shapes visible extended text with system font fallback. The payload
 captures File Pilot's configured font object, path, and point size at the native
@@ -21,54 +21,32 @@ conversion. Arabic uses Segoe UI, CJK uses Microsoft YaHei, Korean uses Malgun
 Gothic, Indic scripts use Nirmala UI, and symbols/emoji use their Segoe families.
 File Pilot's private-use icon ranges stay on its native icon-font path.
 
-The previous renderer replayed all Unicode after File Pilot's frame renderer.
-That made background filenames topmost when a popup covered them, and its label
-rectangle could not reproduce nested menu/window scissors. The new implementation
-hooks both native calls to `FUN_14004A690`, File Pilot's D3D glyph-batch helper.
-Unicode now executes at the marker's original command position, after File Pilot
-has selected the correct render target and native clip rectangle.
+The production renderer packs rasterized glyph masks into a shared 2048x2048 R8
+page. DirectWrite glyph IDs, advances, offsets, fallback faces, and bidi levels
+produce individual quads. Baselines are snapped to File Pilot's integer pixel
+grid to prevent filtering shimmer. A 128-entry shape cache and up to 1024 glyph
+records keep repeated folders and labels fast.
 
-File Pilot also applies menu/window animation while building each native
-0x48-byte glyph instance. The payload hooks the verified native quad-emitter call
-at `0x1401B8F9C` and turns the invisible carrier into a 4096-pixel transform
-probe. File Pilot transforms that known rectangle itself; the payload derives an
-anchored affine transform from the four resulting corners and applies it to the
-DirectWrite row or glyph quads. This preserves nested translation, scale,
-rotation, skew, and mirroring without depending on the private matrix-stack
-layout.
+The earlier renderer replayed Unicode after File Pilot's frame renderer, which
+placed background filenames over open menus and lost nested clipping. The fixed
+implementation hooks both calls to File Pilot's D3D glyph-batch helper and
+replaces an invisible native carrier in place. Drawing therefore uses the active
+render target, command order, and native scissor.
 
-The A/B modes are:
+File Pilot applies menu/window animation while building each native 0x48-byte
+glyph instance. The payload hooks the verified native quad-emitter call at
+`0x1401B8F9C`, sends a 4096-pixel transform probe through that emitter, and
+derives an anchored affine transform from the four output corners. The shaped
+glyph quads inherit translation, scale, rotation, skew, and mirroring without
+depending on File Pilot's private matrix-stack layout.
 
-- `row-texture` (proposition 1, default): File Pilot emits one transparent native
-  carrier glyph. The batch hook replaces it with one cached, DirectWrite-shaped
-  R8 row texture.
-- `shaped-glyph` (proposition 2): the same carrier selects a shared 2048x2048 R8
-  glyph page. DirectWrite glyph IDs, advances, offsets, fallback faces, and bidi
-  levels produce individual quads. Baselines are snapped to File Pilot's integer
-  pixel grid to prevent filtering shimmer.
-- `custom-command` (proposition 4): the payload calls File Pilot's verified native
-  command allocator, records the live clip/target IDs, and appends a custom marker
-  instance directly. The batch hook draws a row texture when it sees that marker.
-  If the frame vector has no spare slot, this mode falls back to the transparent
-  native carrier rather than corrupting the list.
+There is no production renderer or transform selector. Row-texture,
+custom-command, and legacy-placement experiments are retained only on the
+`agent/fixed-d3d-unicode-renderer` development branch.
 
-Set `FPILOT_UNICODE_NATIVE_MODE` to one of those names before process startup.
-Unknown or absent values select `row-texture`.
-
-Animation behavior has an independent A/B selector. `native-probe` is the
-default; `legacy` retains the former static-rectangle placement:
-
-```powershell
-$env:FPILOT_UNICODE_TRANSFORM_MODE = 'native-probe'
-# or: $env:FPILOT_UNICODE_TRANSFORM_MODE = 'legacy'
-```
-
-The row cache has 128 entries. The shaped-glyph arm retains the existing
-128-entry shape cache and up to 1024 glyph records on its page. Texture and shape
-assets remain reusable. Native-probe packets are coalesced only after capture and
-only when their complete affine transform and other draw state match, so different
-parent animations cannot merge. Every carrier remains in the command stream. The
-active native scissor is intersected with the transformed label bounds and viewport.
+Packets are coalesced only after native transform capture and only when their
+complete transform and draw state match. This prevents labels under different
+parent animations from merging.
 
 Native File Pilot multiplies all color channels by mono-atlas coverage and uses
 premultiplied-alpha composition. The injected shader matches its `ONE` /
@@ -85,19 +63,15 @@ fallback.
 ### Runtime telemetry and validation
 
 `build_patch.ps1 -All` writes a sibling `<output>.unicode.json` manifest with the
-selectors, modes, and telemetry RVA. Version 7 telemetry includes the selected
-renderer and transform modes, transform captures/failures, animated draws, probe
-markers, validation residual, marker submission/draw counts, native batch splits,
-custom-command fallbacks, and shaped-glyph build/hit/draw counters.
+fixed renderer, fixed transform strategy, and telemetry RVA. Version 7 telemetry
+includes transform captures/failures, animated draws, validation residual,
+marker submission/draw counts, native batch splits, and shaped-glyph
+build/hit/draw counters.
 
-`benchmark_unicode_native_modes.ps1` cold-starts the three renderer arms under
-both `legacy` and `native-probe` placement against the four multilingual
-filenames. Earlier renderer-only samples reached first Unicode drawing in roughly
-240-370 ms; results are machine- and cache-dependent.
-The native-probe smoke run reported zero transform-capture failures, packets left
-undispatched, backend fallbacks, custom-command fallbacks, and atlas failures in
-all three renderer arms after transform-aware coalescing. These figures are a
-local comparison, not a performance guarantee.
+The final native-probe shaped-glyph smoke run reached first Unicode drawing in
+about 284 ms on the development machine and reported zero transform-capture
+failures, packets left undispatched, backend fallbacks, or atlas failures. This
+is a local comparison, not a performance guarantee.
 
 ## Implementation plan and completed work
 
@@ -107,15 +81,15 @@ local comparison, not a performance guarantee.
    startup does not rasterize tens of thousands of unused code points.
 3. Shape visible extended rows with DirectWrite, system font fallback, and the
    configured File Pilot font metrics.
-4. Rasterize and cache R8 row/glyph masks, insert a carrier at File Pilot's
-   native command position, and composite under the active target and scissor.
+4. Rasterize and cache R8 glyph masks, insert a carrier at File Pilot's native
+   command position, and composite under the active target and scissor.
 5. Capture File Pilot's native carrier transform and apply it to every Unicode
-   row/glyph quad so menu and window animation remains native.
+   glyph quad so menu and window animation remains native.
 6. Accumulate high and low UTF-16 surrogates at the one-character `WM_CHAR`
    conversion site before calling File Pilot's UTF-8 codec.
 7. Remove the two code-point clamps that forced caret input back into the ASCII
    range, and make bounded UTF-8 copies stop on a code-point boundary.
-8. Regression-test exact call-site counts, A/B metadata, command/draw seams, icon
+8. Regression-test exact call-site counts, fixed-renderer metadata, command/draw seams, icon
    preservation, hook destinations, and the fail-closed profile. Smoke-test
    real filenames in a running patched executable.
 
@@ -137,7 +111,6 @@ The patcher validates and redirects these File Pilot regions:
 | Glyph range table | `0x140245DC0` | Restored to compact native ranges by the D3D device hook |
 | Caret clamps | `0x1401D0DBA`, `0x1401D11FD` | ASCII-only conditional moves are removed |
 | `D3D11CreateDevice` calls | `0x14004892B`, `0x14004897A` | Request BGRA interoperability and initialize compact ranges |
-| Native command allocator | `0x1401B99C0` | Proposition 4 appends a clip/target-aware carrier node |
 | Native quad-emitter call | `0x1401B8F9C` | Invisible carriers capture File Pilot's exact affine animation transform |
 | Native D3D batch calls | `0x140049B30`, `0x140049C37` | Inline markers are replaced at their original draw position |
 | Direct3D frame call | `0x1401EDB49` | Initializes resources, handles resize, and retires per-frame packet data |
@@ -161,7 +134,6 @@ From the repository root:
 python -m pip install lief capstone
 & .\patcher\build_patch.ps1 -All
 python -m unittest discover -s .\patcher -p 'test_*.py' -v
-& .\patcher\benchmark_unicode_native_modes.ps1
 ```
 
 Runtime smoke coverage used these filenames:
@@ -184,8 +156,7 @@ patch.
   DirectWrite paths, but the renderer uses monochrome glyph masks rather than
   layered color emoji.
 - Configured font-file recognition is still a bounded filename-to-family map.
-  An unrecognized custom font file currently falls back to Segoe UI in all
-  three native-inline modes.
+  An unrecognized custom font file currently falls back to Segoe UI.
 - Case folding, collation, word boundaries, grapheme-aware cursor movement,
   and normalization retain File Pilot's original behavior.
 - The Unicode renderer requires File Pilot's Direct3D backend. OpenGL

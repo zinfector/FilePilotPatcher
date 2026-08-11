@@ -22,8 +22,7 @@ public class UnicodeNativeTrace extends GhidraScript {
         out = new PrintWriter(new OutputStreamWriter(new FileOutputStream(args[0]), "UTF-8"));
         long[] targets = {
             0x1401b82f0L, // native text command emitter
-            0x1401b99c0L, // native draw-command node allocator
-            0x1401b9b50L, // shared render-command allocator/linker
+            0x1401b9b50L, // native quad emitter / transform seam
             0x1401b91c0L, // native texture/resource registration
             0x1401b9400L, // native texture/resource lookup
             0x140049350L, // D3D render-command dispatcher

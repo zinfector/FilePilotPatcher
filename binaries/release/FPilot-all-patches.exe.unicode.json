@@ -57,7 +57,7 @@
     "unicode_text": true
   },
   "unicode": {
-    "profile": "DirectWrite-shaped native-inline D3D11 A/B renderers",
+    "profile": "DirectWrite-shaped native-inline D3D11 glyph renderer",
     "glyph_lookup": "0x14010aa50",
     "glyph_lookup_call_sites": [
       "0x1401b7a24",
@@ -128,43 +128,30 @@
     "d3d_renderer_global": "0x1402474d8",
     "native_quad_emitter": "0x1401b9b50",
     "native_quad_call_site": "0x1401b8f9c",
-    "native_command_allocator": "0x1401b99c0",
     "d3d_draw_batch": "0x14004a690",
     "d3d_draw_batch_call_sites": [
       "0x140049b30",
       "0x140049c37"
     ],
     "native_render_data_global": "0x140247298",
-    "atlas_policy": "compact native ranges with row and shared-glyph mask caches",
+    "atlas_policy": "compact native ranges with a shared shaped-glyph mask cache",
     "hooks": {
-      "glyph lookup": "0x140296870",
-      "text measurement": "0x140296880",
-      "text renderer": "0x140296e20",
-      "font atlas": "0x1402962f0",
-      "WM_CHAR UTF-16 conversion": "0x1402973b0",
-      "D3D11 device creation": "0x140295c20",
-      "D3D frame lifecycle": "0x1402961c0",
-      "native quad emitter": "0x140296ae0",
-      "native D3D draw batch": "0x140295de0"
+      "glyph lookup": "0x140294fc0",
+      "text measurement": "0x140294fd0",
+      "text renderer": "0x140295550",
+      "font atlas": "0x140294a40",
+      "WM_CHAR UTF-16 conversion": "0x140295840",
+      "D3D11 device creation": "0x1402943d0",
+      "D3D frame lifecycle": "0x140294910",
+      "native quad emitter": "0x140295230",
+      "native D3D draw batch": "0x140294590"
     },
     "caret_ascii_clamps_removed": 2,
-    "renderer": "native-inline-d3d-atlas",
-    "renderer_selection": "environment",
-    "renderer_selector": "FPILOT_UNICODE_NATIVE_MODE",
-    "renderer_default": "row-texture",
-    "renderer_modes": {
-      "row-texture": 1,
-      "shaped-glyph": 2,
-      "custom-command": 4
-    },
-    "transform_selection": "environment",
-    "transform_selector": "FPILOT_UNICODE_TRANSFORM_MODE",
-    "transform_default": "native-probe",
-    "transform_modes": {
-      "legacy": 1,
-      "native-probe": 2
-    },
-    "telemetry_rva": "0x29a0b0"
+    "renderer": "shaped-glyph",
+    "renderer_selection": "fixed",
+    "transform": "native-probe",
+    "transform_selection": "fixed",
+    "telemetry_rva": "0x2980b0"
   },
   "cross_window_preview": {
     "native_tab_surface_renderer": "0x1401464e0",
@@ -183,19 +170,19 @@
   },
   "tab_tearoff": {
     "profile": "File Pilot 0.8.2 x64",
-    "code_rva": "0x5da000",
-    "state_rva": "0x5db000",
+    "code_rva": "0x5ae000",
+    "state_rva": "0x5af000",
     "stubs": {
-      "activation": "0x5da000",
-      "export_call": "0x5da0fb",
-      "worker_placement": "0x5da1ef",
-      "clipboard_publish": "0x5da243",
-      "clipboard_consume": "0x5da2c3",
-      "child_apply": "0x5da39f",
-      "drag_image": "0x5da482",
-      "drag_text": "0x5da4cf"
+      "activation": "0x5ae000",
+      "export_call": "0x5ae0fb",
+      "worker_placement": "0x5ae1ef",
+      "clipboard_publish": "0x5ae243",
+      "clipboard_consume": "0x5ae2c3",
+      "child_apply": "0x5ae39f",
+      "drag_image": "0x5ae482",
+      "drag_text": "0x5ae4cf"
     },
-    "sha256": "cc4f60a427f5f2ad3d95fad2fc268c0f54ece2386d4841fd95124633cfd4ec11",
+    "sha256": "9e89edd23748198385c4c7c2e11741a04c1b7299da14249cd1355d6cf78efb7f",
     "cross_window_transfer_rva": "0x279330",
     "cross_window_preview_rva": "0x279300"
   }

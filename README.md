@@ -45,21 +45,13 @@ To build every maintained patch, use the combined profile:
 This writes
 `binaries/release/FPilot-all-patches.exe` and its JSON manifest. It
 contains Open File Location, tab creation/tear-off, cross-window tab merge, and
-three native-inline Unicode A/B modes. `row-texture` is the default;
-`shaped-glyph` and `custom-command` are selected with
-`FPILOT_UNICODE_NATIVE_MODE`. DirectWrite still provides shaping and font
-fallback, but Unicode drawing now executes at the corresponding position in
-File Pilot's own command stream with its active render target and scissor. No
-Unicode layer is replayed after menus or other foreground UI. The independent
-`FPILOT_UNICODE_TRANSFORM_MODE` selector compares legacy static placement with
-the default `native-probe`, which captures File Pilot's affine menu/window
-animation from an invisible native carrier.
-
-Run the renderer/transform benchmark with:
-
-```powershell
-& .\patcher\benchmark_unicode_native_modes.ps1
-```
+the fixed shaped-glyph Unicode renderer. DirectWrite provides shaping and font
+fallback, while a shared D3D11 glyph atlas draws at the corresponding position
+in File Pilot's own command stream with its active render target and scissor.
+An invisible native carrier captures File Pilot's affine menu/window animation,
+so Unicode labels participate in native transitions and remain behind foreground
+menus. There is no renderer or transform environment selector in the production
+build.
 
 See [docs/filepilot-unicode-patch.md](docs/filepilot-unicode-patch.md) for the
 renderer design, patched regions, and current limits.

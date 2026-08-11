@@ -193,45 +193,22 @@ To emit only the Open File Location integration, use:
 intentionally restricted to the verified File Pilot 0.8.2 hash because its text,
 font, input, caret, command-list, and D3D batch seams use exact calling conventions
 and structure layouts. The build writes `<output>.unicode.json`, which records the
-three A/B modes and telemetry RVA.
+fixed `shaped-glyph` renderer and telemetry RVA.
 
-The default `row-texture` mode converts a shaped row to an R8 coverage texture
-and replaces an invisible native text carrier at the same command position.
-`shaped-glyph` packs DirectWrite glyph masks into a shared 2048x2048 R8 page and
-emits shaped quads at that position. `custom-command` directly appends a File
-Pilot draw node carrying the row texture. Select a mode before starting File
-Pilot:
+The renderer packs DirectWrite glyph masks into a shared 2048x2048 R8 page and
+emits the shaped glyph quads where File Pilot placed an invisible native text
+carrier. File Pilot applies menu/window animation while emitting that carrier;
+the payload derives the affine transform from its output corners and applies it
+to the Unicode geometry.
 
-```powershell
-$env:FPILOT_UNICODE_NATIVE_MODE = 'row-texture'    # proposition 1, default
-$env:FPILOT_UNICODE_NATIVE_MODE = 'shaped-glyph'  # proposition 2
-$env:FPILOT_UNICODE_NATIVE_MODE = 'custom-command' # proposition 4
-& ..\binaries\release\FPilot-all-patches.exe 'C:\path\to\folder'
-```
-
-File Pilot applies menu/window animation while emitting native glyph quads. The
-default `native-probe` placement mode sends an invisible 4096-pixel carrier
-through that same emitter, derives File Pilot's affine transform from the output
-corners, and applies it to the Unicode geometry. Compare it with the former
-static placement independently of the renderer:
-
-```powershell
-$env:FPILOT_UNICODE_TRANSFORM_MODE = 'native-probe' # default, animated
-# or: $env:FPILOT_UNICODE_TRANSFORM_MODE = 'legacy' # static A/B control
-```
-
-All three modes draw inside File Pilot's command dispatch with its current render
+Drawing occurs inside File Pilot's command dispatch with its current render
 target, native scissor, and captured transform. The shader emits premultiplied
 RGBA and matches File Pilot's `ONE` / `INV_SRC_ALPHA` composition. Texture and
 shape assets remain cached; draw packets coalesce only after capture and only
 when their affine transforms also match. The payload snapshots and restores every
-D3D pipeline state that it changes.
-
-Run a cold-start comparison of all renderer and transform combinations with:
-
-```powershell
-& .\benchmark_unicode_native_modes.ps1
-```
+D3D pipeline state that it changes. Production has no renderer or transform
+environment selector; the alternative experiments remain on the renderer
+development branch.
 
 Design details, coverage, and limitations are in
 `..\docs\filepilot-unicode-patch.md`.
