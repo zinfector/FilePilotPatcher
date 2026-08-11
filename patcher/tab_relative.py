@@ -1,6 +1,6 @@
 """Fail-closed File Pilot 0.8.2 tab tear-off patch emitter.
 
-The Open File Location/Miller payload is discovered structurally by
+The Open File Location payload is discovered structurally by
 ``patch_filepilot.py``.  The tab tear-off hooks depend on register and stack
 layouts at eight native seams, so this module deliberately accepts only the
 exact build whose layouts were verified in Ghidra and at runtime.

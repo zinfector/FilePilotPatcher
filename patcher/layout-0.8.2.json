@@ -18,44 +18,18 @@
     "0x140058ec0"
   ],
   "selector": "0x14004ac90",
-  "selection_commit": "0x1401bb250",
-  "miller": {
-    "item_interaction": "0x140116080",
-    "item_interaction_call_sites": [
-      "0x14012923a",
-      "0x14012a1b4",
-      "0x14012bc89",
-      "0x14012ffcc",
-      "0x140131514",
-      "0x1401325cb"
-    ],
-    "begin_open_hook_site": "0x140116ff5",
-    "begin_queued_command": "0x14015d7d0",
-    "item_metadata": "0x1400668a0",
-    "inspector_sync": "0x14008ac20",
-    "navigate_panel": "0x14014e850"
-  },
+  "selection_cancel": "0x140085030",
+  "toggle_cursor_selection": "0x140089520",
   "offsets": {
     "selection_state_display": "0x98",
     "display_mode": "0x10",
     "display_primary": "0x20",
     "display_alternate": "0xc8",
     "display_count": "0x68",
-    "panel_inspector": "0x6d8",
-    "panel_backing": "0x90",
-    "panel_view": "0x98",
-    "child_owner": "0xc8",
-    "child_flag": "0x502",
-    "inspector_extent": "0x40",
-    "inspector_layout": "0x48",
-    "inspector_mode": "0x13d0",
-    "inspector_current_item": "0x13e8",
-    "inspector_backing": "0x13f0",
-    "inspector_child": "0x1480",
-    "view_settings": "0x16c",
-    "item_flags": "0x20",
-    "metadata_path": "0x10",
-    "metadata_flags": "0x30"
+    "app_active_panel": "0xb30"
+  },
+  "tab_support": {
+    "find_imgui_window": "0x1401cac10"
   },
   "iat": {
     "GetCommandLineW": "0x140217470",
@@ -74,5 +48,15 @@
     "CoCreateInstance": "0x1402178c8",
     "CoTaskMemFree": "0x1402178e8",
     "PropVariantClear": "0x1402178c0"
+  },
+  "build_profile": "open-location-and-tabs",
+  "patches": {
+    "open_file_location": true,
+    "tab_window_creation": true,
+    "cross_window_tab_merge": true
+  },
+  "tab_tearoff": {
+    "profile": "File Pilot 0.8.2 x64",
+    "validation": "exact SHA-256 plus per-hook byte checks during patch mode"
   }
 }

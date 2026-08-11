@@ -48,36 +48,6 @@ The payload registers the same File Pilot facade under both PIDL representations
 requests can find the compact alias, while Chrome, Brave, and other Chromium browsers can find the
 desktop/canonical alias.
 
-## Miller navigation (separate, not emitted)
-
-The combined emitter deliberately leaves every Miller/Inspector call site native. The research
-below is retained for a separate future patch, but none of it is activated in the delivered build.
-
-Enable File Pilot's inspector with **Toggle Inspector** (the default shortcut is Space). Activating
-a folder in the inspector starts the chain. Every deeper folder is opened by File Pilot's native
-**Open in Right Split** implementation, so it creates a real panel instead of reusing the previous
-one. A path can therefore remain visible as `Alpha | Bravo | Charlie | Delta | Echo`.
-
-The first two columns are the owner panel and its inspector. Columns after that are ordinary native
-split panels owned by the Miller controller. Folder activation is intercepted through both of File
-Pilot's directory commands (`0x30` and `0x31`) only when the source is the validated inspector child
-or a Miller-owned split. File activation and unrelated panels retain their normal behavior.
-
-Selecting a different folder in an earlier column truncates the branch. Descendant Miller panels
-are closed from right to left through File Pilot's native **Close All Tabs** action, two frames are
-allowed for layout cleanup, and the replacement folder is appended with **Open in Right Split**.
-The source panel is never navigated away, so its chosen child remains visible.
-
-Before each append, the payload applies the activated leaf through File Pilot's native
-select-by-name helper and explicitly invokes the native selection-commit routine. This preserves
-the blue parent-row highlight (and native scroll-to-selection behavior) in every opened subfolder.
-The panel passed to File Pilot's loader is captured at the loader call site, which remains reliable
-even when File Pilot chooses not to change its global active-panel field.
-
-`MillerController` tracks panel identity, generation, path, selected leaf, transaction stage, and
-branch ownership for up to 32 simultaneous columns. That limit is a defensive static allocation,
-not rolling-window behavior.
-
 ## Cross-window tab merging
 
 File Pilot's native command `0x58` can rearrange tabs only inside one process. Its destination
@@ -203,14 +173,42 @@ output is `..\binaries\release\FPilot-open-location-tab-merge.exe`; the
 original executable is read-only input. The Python patcher now emits both
 `.fplt` and the tab tear-off sections in one invocation.
 
+The explicit full composition is:
+
+```powershell
+& .\build_patch.ps1 -All
+```
+
+It writes `..\binaries\release\FPilot-all-patches.exe`, combining
+Open File Location, tab creation/tear-off, cross-window tab merge, and the
+Unicode payload. `-All` maps to the Python patcher's `--all` profile.
+
 To emit only the Open File Location integration, use:
 
 ```powershell
 & .\build_patch.ps1 -OpenLocationOnly -OutputExe ..\binaries\release\FPilot-open-location-only.exe
 ```
 
-The shell locator remains structural. Miller regions are discovered only so a separation guard can
-verify that their native calls remain byte-for-byte untouched. The tab hooks currently fail
+`-All` also compiles a second no-CRT payload into `.fpu`. The Unicode payload is
+intentionally restricted to the verified File Pilot 0.8.2 hash because its text,
+font, input, and caret seams use exact calling conventions and structure
+layouts. It always uses the D3D-atlas renderer; there is no environment selector
+or alternate runtime implementation. The build writes `<output>.unicode.json`, which records
+the fixed renderer and telemetry RVA.
+
+The renderer applies deterministic script families, converts shaped glyph runs
+to R8 coverage masks, and draws them through File Pilot's immediate D3D11
+context. Its shader emits premultiplied RGBA, so its blend state matches File
+Pilot's native `ONE` / `INV_SRC_ALPHA` composition. Replayed instances of the
+same text, rectangle, alignment, and font are coalesced before `Present`; the
+latest color wins. It snapshots and restores every pipeline state it changes,
+so the overlay neither races a second graphics device nor contaminates the next
+native frame.
+
+Design details, coverage, and limitations are in
+`..\docs\filepilot-unicode-patch.md`.
+
+The shell locator remains structural. The tab hooks currently fail
 closed unless the input is the verified File Pilot 0.8.2 SHA-256 because those
 instruction seams depend on exact register and stack layouts.
 
@@ -249,14 +247,7 @@ All calls returned `S_OK`; the application remained responsive and closed normal
 desktop-folder PIDL construction. `capture_window.ps1` was used only for visual verification; none
 of these test utilities are required by the patched executable. `test_locator.py` verifies masked
 signature relocation, fail-closed signature behavior, complete binding generation, and exact
-rediscovery of both the shell and inspector regions in the 0.8.2 regression layout.
-
-The following is historical validation of the separate Miller experiment and is not part of the
-combined executable. That experiment was smoke-tested through five simultaneous columns:
-`Alpha | Bravo | Charlie | Delta | Echo`. Each parent folder remained highlighted, `Echo` displayed
-`n-windows.txt`, and File Pilot remained responsive. Rebranching at `Charlie` to `Foxtrot` closed
-the `Delta` and `Echo` descendants and appended only `Foxtrot`, whose panel displayed `branch.txt`.
-No Properties dialog was emitted for intercepted folders.
+rediscovery of the required shell and tab-support regions in the 0.8.2 regression layout.
 
 The earlier relative-placement build was additionally exercised from the original
 executable and produced SHA-256
@@ -269,13 +260,10 @@ selected `SECOND_TARGET.log`.
 
 The current separated build was generated from the original 0.8.2 executable as
 `binaries/release/FPilot-open-location-tab-merge.exe`, SHA-256
-`D8EC997C2619FF73F976EB48814783F0947821DC24E8402014FA84AEC3444689`.
+`AD18C1C56891F467658612BE20402C8FB46D8DD7CA37AE3A5435A818726A5C56`.
 A controlled two-process drag displayed File Pilot's native blue insertion placeholder in the
 receiver. Runtime telemetry recorded accepted preview sessions, live cursor updates, native tab
-surface calls, and captured insertion destinations. The native Inspector was toggled
-closed-open-closed and returned to the original pixels, confirming that no Miller behavior remains
-active. The separation guard verified all 52 Miller/Inspector calls byte-for-byte against the
-original executable.
+surface calls, and captured insertion destinations.
 
 ## Important notes
 
