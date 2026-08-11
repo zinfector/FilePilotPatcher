@@ -18,129 +18,18 @@
     "0x140058ec0"
   ],
   "selector": "0x14004ac90",
-  "selection_commit": "0x1401bb250",
   "selection_cancel": "0x140085030",
   "toggle_cursor_selection": "0x140089520",
-  "miller": {
-    "item_interaction": "0x140116080",
-    "item_interaction_call_sites": [
-      "0x14012923a",
-      "0x14012a1b4",
-      "0x14012bc89",
-      "0x14012ffcc",
-      "0x140131514",
-      "0x1401325cb"
-    ],
-    "begin_open_hook_site": "0x140116ff5",
-    "begin_open_hook_sites": [
-      "0x140116f80",
-      "0x140116ff5"
-    ],
-    "begin_queued_command": "0x14015d7d0",
-    "open_selected_items": "0x14005dc00",
-    "open_selected_navigate_call_sites": [
-      "0x14005ee16",
-      "0x14005f328"
-    ],
-    "close_all_tabs": "0x1400871f0",
-    "item_metadata": "0x1400668a0",
-    "inspector_sync": "0x14008ac20",
-    "inspector_sync_call_site": "0x1400a9a7f",
-    "inspector_frame": "0x1400a9690",
-    "inspector_renderer": "0x14008f220",
-    "inspector_renderer_call_sites": [
-      "0x1401186f6",
-      "0x1401188d8",
-      "0x1401188ee"
-    ],
-    "inspector_child_surface_renderer": "0x140137180",
-    "inspector_child_surface_site": "0x14008faab",
-    "inspector_layout_activate": "0x1401cc250",
-    "inspector_layout_activate_call_site": "0x14008f62b",
-    "panel_surface_renderer": "0x140117af0",
-    "panel_viewport_renderer": "0x14011fa20",
-    "panel_viewport_call_sites": [
-      "0x140118654",
-      "0x140118816"
-    ],
-    "panel_header_renderer": "0x14013e4f0",
-    "panel_header_call_sites": [
-      "0x140118622",
-      "0x14011880b"
-    ],
-    "panel_footer_renderer": "0x140132dc0",
-    "panel_footer_call_site": "0x140118649",
-    "layout_context_global": "0x140247288",
-    "layout_phase_offset": "0x282",
-    "find_imgui_window": "0x1401cac10",
-    "panel_renderer": "0x14014d250",
-    "inspector_child_render_site": "0x1400a9aa0",
-    "navigate_panel": "0x14014e850",
-    "navigate_call_sites": [
-      "0x14001cb64",
-      "0x14005ee16",
-      "0x14005f328",
-      "0x1400622d4",
-      "0x14007cad0",
-      "0x14007fa89",
-      "0x140080eff",
-      "0x140081151",
-      "0x14008140b",
-      "0x140081bc1",
-      "0x1400821e2",
-      "0x140082c62",
-      "0x140083234",
-      "0x140087914",
-      "0x140087d37",
-      "0x14008ae9a",
-      "0x14008afc9",
-      "0x14014fd42",
-      "0x1401500bb",
-      "0x14016759b",
-      "0x140167a04",
-      "0x140167c0a",
-      "0x1401688c4",
-      "0x140168a8e",
-      "0x14016a108",
-      "0x14016ad1e",
-      "0x14016bbe2",
-      "0x14016ccda",
-      "0x14016d28b",
-      "0x14016d570",
-      "0x1401848db",
-      "0x140192c88",
-      "0x1401dd6c0"
-    ]
-  },
   "offsets": {
     "selection_state_display": "0x98",
     "display_mode": "0x10",
     "display_primary": "0x20",
     "display_alternate": "0xc8",
     "display_count": "0x68",
-    "panel_selection_mode": "0x120",
-    "panel_inspector": "0x6d8",
-    "panel_backing": "0x90",
-    "panel_view": "0x98",
-    "panel_identity": "0x78",
-    "panel_container": "0x4f0",
-    "child_owner": "0xc8",
-    "child_flag": "0x502",
-    "inspector_extent": "0x40",
-    "inspector_ratio": "0x44",
-    "inspector_layout": "0x48",
-    "inspector_width": "0x50",
-    "inspector_mode": "0x13d0",
-    "inspector_current_item": "0x13e8",
-    "inspector_backing": "0x13f0",
-    "inspector_child": "0x1480",
-    "view_settings": "0x16c",
-    "item_flags": "0x20",
-    "metadata_path": "0x10",
-    "metadata_flags": "0x30",
-    "backing_path": "0x168",
-    "panel_focused_item": "0x128",
     "app_active_panel": "0xb30"
+  },
+  "tab_support": {
+    "find_imgui_window": "0x1401cac10"
   },
   "iat": {
     "GetCommandLineW": "0x140217470",
@@ -160,11 +49,11 @@
     "CoTaskMemFree": "0x1402178e8",
     "PropVariantClear": "0x1402178c0"
   },
+  "build_profile": "open-location-and-tabs",
   "patches": {
     "open_file_location": true,
     "tab_window_creation": true,
-    "cross_window_tab_merge": true,
-    "miller_navigation": false
+    "cross_window_tab_merge": true
   },
   "cross_window_preview": {
     "native_tab_surface_renderer": "0x1401464e0",
@@ -183,24 +72,20 @@
   },
   "tab_tearoff": {
     "profile": "File Pilot 0.8.2 x64",
-    "code_rva": "0x3b6000",
-    "state_rva": "0x3b7000",
+    "code_rva": "0x28f000",
+    "state_rva": "0x290000",
     "stubs": {
-      "activation": "0x3b6000",
-      "export_call": "0x3b60fb",
-      "worker_placement": "0x3b61ef",
-      "clipboard_publish": "0x3b6243",
-      "clipboard_consume": "0x3b62c3",
-      "child_apply": "0x3b639f",
-      "drag_image": "0x3b6482",
-      "drag_text": "0x3b64cf"
+      "activation": "0x28f000",
+      "export_call": "0x28f0fb",
+      "worker_placement": "0x28f1ef",
+      "clipboard_publish": "0x28f243",
+      "clipboard_consume": "0x28f2c3",
+      "child_apply": "0x28f39f",
+      "drag_image": "0x28f482",
+      "drag_text": "0x28f4cf"
     },
-    "sha256": "d8ec997c2619ff73f976eb48814783f0947821dc24e8402014fa84aec3444689",
-    "cross_window_transfer_rva": "0x27bd70",
-    "cross_window_preview_rva": "0x27bd40"
-  },
-  "miller_separation_guard": {
-    "modified_call_sites": 0,
-    "verified_native_call_sites": 52
+    "sha256": "ad18c1c56891f467658612be20402c8fb46d8dd7ca37ae3a5435a818726a5c56",
+    "cross_window_transfer_rva": "0x279330",
+    "cross_window_preview_rva": "0x279300"
   }
 }

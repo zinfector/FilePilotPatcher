@@ -5,8 +5,7 @@ function boundaries to find the required native regions, derives their call targ
 offsets from disassembly, resolves every Windows API through the target's import table, and
 validates cross-references before writing. The tab tear-off extension is additionally gated to an
 exact build profile because its hooks depend on register and stack layouts at native instruction
-seams. Miller-navigation regions are discovered for compatibility reporting only and are never
-patched by this combined emitter. Use --open-location-only to emit only the shell integration.
+seams. Use --open-location-only to emit only the shell integration.
 """
 from __future__ import annotations
 
@@ -33,8 +32,48 @@ KNOWN_SHA256 = {
 PAYLOAD_IMAGE_BASE = 0x140270000
 PAYLOAD_FIRST_RVA = 0x1000
 BINDINGS_MAGIC = 0x53474E4942504C46
-BINDINGS_VERSION = 21
-BINDINGS_QWORDS = 82
+BINDINGS_VERSION = 22
+BINDINGS_QWORDS = 41
+UNICODE_PAYLOAD_FIRST_RVA = 0x1000
+UNICODE_BINDINGS_MAGIC = 0x53474E4942555046
+UNICODE_BINDINGS_VERSION = 3
+UNICODE_BINDINGS_QWORDS = 18
+UNICODE_SUPPORTED_SHA256 = {
+    "08826147a90e7c6a1c4e80968aaa927b14cfbca7271c7d12db3af9f24c483646":
+        "File Pilot 0.8.2 x64 Unicode profile",
+}
+UNICODE_GLYPH_LOOKUP_RVA = 0x10AA50
+UNICODE_MEASURE_TEXT_RVA = 0x1B78F0
+UNICODE_RENDER_TEXT_RVA = 0x1B82F0
+UNICODE_FONT_CREATE_ATLAS_RVA = 0x216580
+UNICODE_FONT_RASTERIZER_RVA = 0x215C70
+UNICODE_UTF16_TO_UTF8_RVA = 0x1DD750
+UNICODE_INPUT_CONVERSION_CALL_RVA = 0x20B59A
+UNICODE_RANGE_TABLE_RVA = 0x245DC0
+UNICODE_D3D_CREATE_DEVICE_RVA = 0x2168E4
+UNICODE_D3D_RENDER_FRAME_RVA = 0x49350
+UNICODE_D3D_RENDER_FRAME_CALL_RVA = 0x1EDB49
+UNICODE_D3D_RENDERER_GLOBAL_RVA = 0x2474D8
+UNICODE_CARET_CLAMPS = {
+    0x1D0DBA: bytes.fromhex("0F 47 D0"),
+    0x1D11FD: bytes.fromhex("0F 47 D7"),
+}
+UNICODE_ORIGINAL_RANGES = (
+    (0x0020, 0x007F), (0x0080, 0x00FF), (0x0100, 0x017F),
+    (0x0180, 0x024F), (0x0370, 0x03FF), (0x0400, 0x04FF),
+    (0x0500, 0x052F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F),
+    (0x1C80, 0x1C8F), (0x0300, 0x036F), (0x2000, 0x206F),
+    (0x2190, 0x2193), (0xE000, 0xE096), (0xE400, 0xE400),
+    (0xE800, 0xE801), (0xEC00, 0xEC00),
+)
+UNICODE_INITIAL_RANGES = (
+    (0x0020, 0x03FF), (0x0400, 0x052F), (0x1C80, 0x2DFF),
+    (0x0590, 0x08FF), (0x3000, 0x4DBF), (0x4E00, 0x65FF),
+    (0x6600, 0x7DFF), (0x7E00, 0x95FF), (0x9600, 0xA69F),
+    (0xAC00, 0xC1FF), (0xC200, 0xD7AF), (0xFB50, 0xFEFF),
+    (0x2190, 0x2193),
+    (0xE000, 0xE096), (0xE400, 0xE400), (0xE800, 0xE801), (0xEC00, 0xEC00),
+)
 TAB_SURFACE_RENDERER_RVA = 0x1464E0
 TAB_SURFACE_CALL_RVAS = (0x1180A9, 0x1187F5, 0x118904)
 TAB_HOVER_HELPER_RVA = 0x1D7860
@@ -65,27 +104,6 @@ LIVE_WRAPPER_SIGNATURE = (
     0,
 )
 
-# The folder inspector's synchronization routine.  The fixed instructions describe the flow
-# "panel -> inspector state -> selected item -> folder mode -> backing model -> metadata path";
-# all structure displacements and the metadata helper call are derived from the match.
-INSPECTOR_SYNC_SIGNATURE = (
-    "48 8B 8F ?? ?? ?? ?? 45 33 F6 48 8B 99 ?? ?? ?? ?? 48 85 DB "
-    "0F 84 ?? ?? ?? ?? 83 B9 ?? ?? ?? ?? 02 0F 85 ?? ?? ?? ?? "
-    "48 8B 89 ?? ?? ?? ?? 48 8B D3 0F 29 B4 24 ?? ?? ?? ?? "
-    "E8 ?? ?? ?? ?? 44 8B 43 20 48 8B D0 0F 10 70 ??",
-    0,
-)
-
-# Native Inspector surface renderer.  The ordinary panel surface calls this after computing the
-# Inspector width; Inspector child panels bypass that surface to suppress tabs, so Miller invokes
-# the same renderer explicitly for recursive children.
-INSPECTOR_RENDERER_SIGNATURE = (
-    "48 8B C4 55 48 8D A8 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? "
-    "44 0F 29 48 88 44 0F 29 90 ?? ?? ?? ?? 44 0F 29 98 ?? ?? ?? ?? "
-    "48 89 58 18 41 8B D8 48 89 78 E8 45 33 C0 4C 89 68 D8 4C 8B E9",
-    0,
-)
-
 PANEL_VIEWPORT_SIGNATURE = (
     "48 89 6C 24 10 48 89 74 24 18 57 48 81 EC ?? ?? ?? ?? "
     "4C 8B 4A 78 4C 8D 1D ?? ?? ?? ?? 33 FF 48 8B F2 44 8B D7 48 8B E9 "
@@ -108,8 +126,7 @@ ITEM_INTERACTION_SIGNATURE = (
     0,
 )
 
-# Native "Cancel selection" callback.  It is used before the cursor-toggle callback so Miller
-# navigation keeps exactly one solid selected row in each column.
+# Native selection callbacks used to commit the shell-requested item after enumeration.
 SELECTION_CANCEL_SIGNATURE = (
     "44 89 44 24 ?? 53 56 57 41 55 41 56 48 83 EC ?? 48 8B 1A 48 8B F9 "
     "4C 89 64 24 ?? 48 85 DB 75 ?? 48 8B 99 ?? ?? ?? ?? 33 F6 33 C0 "
@@ -297,8 +314,9 @@ class TargetImage:
             raise ValueError(f"{label} signature expected one match, found {len(matches)}: {rendered}")
         return self.text_va + matches[0] + anchor_offset
 
-    def import_iat(self) -> dict[str, int]:
-        found: dict[str, list[int]] = {name: [] for name in IMPORT_BINDINGS}
+    def resolve_import_iat(self, names: Iterable[str]) -> dict[str, int]:
+        requested = tuple(names)
+        found: dict[str, list[int]] = {name: [] for name in requested}
         for library in self.binary.imports:
             for entry in library.entries:
                 if entry.name in found:
@@ -309,6 +327,9 @@ class TargetImage:
                 raise ValueError(f"import {name} expected once, found {len(addresses)}")
             result[name] = addresses[0]
         return result
+
+    def import_iat(self) -> dict[str, int]:
+        return self.resolve_import_iat(IMPORT_BINDINGS)
 
     def instruction_starts(self) -> set[int]:
         ranges = self.runtime_functions()
@@ -377,15 +398,14 @@ def immediate_call_target(instruction) -> int | None:
     return instruction.operands[0].imm
 
 
-def discover_miller_layout(target: TargetImage, instruction_starts: set[int]) -> dict:
+def discover_runtime_support(target: TargetImage, instruction_starts: set[int]) -> dict:
     decoder = Cs(CS_ARCH_X86, CS_MODE_64)
     decoder.detail = True
-    inspector_renderer = target.locate_signature(
-        "inspector renderer", INSPECTOR_RENDERER_SIGNATURE)
 
-    item_interaction = target.locate_signature("item interaction", ITEM_INTERACTION_SIGNATURE)
-    item_instructions = list(decoder.disasm(target.read(item_interaction, 0x1200),
-                                             item_interaction))
+    item_interaction = target.locate_signature(
+        "item interaction", ITEM_INTERACTION_SIGNATURE)
+    item_instructions = list(decoder.disasm(
+        target.read(item_interaction, 0x1200), item_interaction))
     open_specification, open_call_offset = OPEN_COMMAND_SIGNATURE
     open_matches = [target.text_va + offset
                     for offset in find_masked(target.text_data, open_specification)]
@@ -393,23 +413,9 @@ def discover_miller_layout(target: TargetImage, instruction_starts: set[int]) ->
                   if item_interaction <= sequence < item_interaction + 0x1200]
     if len(candidates) != 1:
         rendered = ", ".join(hex(item) for item in candidates) or "none"
-        raise ValueError(f"Miller open-command path expected one child-aware match, found "
+        raise ValueError("selection command path expected one child-aware match, found "
                          f"{len(candidates)}: {rendered}")
-
-    sequence = candidates[0]
-    child_offsets = []
-    for instruction in item_instructions:
-        if instruction.address >= sequence or instruction.mnemonic != "cmp" or \
-                len(instruction.operands) != 2:
-            continue
-        memory = memory_base_and_disp(instruction, 0)
-        immediate = instruction.operands[1]
-        if (memory and memory[0] == "r14" and memory[1] >= 0x400 and
-                instruction.operands[0].size == 2 and immediate.type == X86_OP_IMM and
-                immediate.imm == 0):
-            child_offsets.append(memory[1])
-    child_flag_offset = unique_value(child_offsets, "inspector-child flag offset")
-    begin_open_site = sequence + open_call_offset
+    begin_open_site = candidates[0] + open_call_offset
     begin_queued_command = target.decode_call(begin_open_site)
     if not target.in_text(begin_queued_command):
         raise ValueError("queued-command builder is outside .text")
@@ -417,7 +423,6 @@ def discover_miller_layout(target: TargetImage, instruction_starts: set[int]) ->
     selection_cancel = target.locate_signature(
         "selection-cancel callback", SELECTION_CANCEL_SIGNATURE)
     toggle_cursor_candidates = []
-    panel_focused_item_candidates = []
     runtime_ranges = target.runtime_functions()
     for site in instruction_starts:
         if target.read(site, 1) != b"\xE8" or target.decode_call(site) != begin_queued_command:
@@ -446,210 +451,20 @@ def discover_miller_layout(target: TargetImage, instruction_starts: set[int]) ->
             instruction.operands[1].type == X86_OP_IMM and
             instruction.operands[1].imm == 0x2E
             for instruction in setup)
-        if not has_toggle_command:
-            continue
         has_cursor_event = any(
             instruction.mnemonic == "cmp" and len(instruction.operands) == 2 and
             register_name(instruction, 0) == "r8d" and
             instruction.operands[1].type == X86_OP_IMM and
             instruction.operands[1].imm == 2
             for instruction in callback_instructions[:call_index])
-        if not has_cursor_event:
-            continue
-        toggle_cursor_candidates.append(begin)
-        panel_focused_item_candidates.extend(
-            memory[1]
-            for instruction in callback_instructions[:call_index]
-            if instruction.mnemonic == "mov" and len(instruction.operands) == 2 and
-            register_name(instruction, 0) == "rdx" and
-            (memory := memory_base_and_disp(instruction, 1)) is not None and
-            memory[0] == "rdi" and 0x100 <= memory[1] < 0x400)
+        if has_toggle_command and has_cursor_event:
+            toggle_cursor_candidates.append(begin)
     toggle_cursor_selection = unique_value(
         toggle_cursor_candidates, "toggle-cursor-selection callback")
-    panel_focused_item_offset = unique_value(
-        panel_focused_item_candidates, "panel focused-item offset")
-
-    open_command_sites = []
-    for index, instruction in enumerate(item_instructions):
-        if immediate_call_target(instruction) != begin_queued_command:
-            continue
-        setup = item_instructions[max(0, index - 5):index]
-        commands = [candidate.operands[1].imm for candidate in setup
-                    if candidate.mnemonic in {"mov", "lea"} and
-                    len(candidate.operands) == 2 and
-                    register_name(candidate, 0) == "edx" and
-                    candidate.operands[1].type == X86_OP_IMM]
-        if commands and commands[-1] in {0x30, 0x31}:
-            open_command_sites.append((commands[-1], instruction.address))
-    directory_open_sites = [site for command, site in open_command_sites if command == 0x30]
-    inspector_open_sites = [site for command, site in open_command_sites if command == 0x31]
-    if inspector_open_sites != [begin_open_site] or len(directory_open_sites) != 1:
-        raise ValueError("expected one standard and one inspector directory-open command site")
-    begin_open_call_sites = sorted(directory_open_sites + inspector_open_sites)
-
-    metadata_candidates = []
-    for index, instruction in enumerate(item_instructions):
-        if not sequence - 0x200 <= instruction.address < sequence:
-            continue
-        called = immediate_call_target(instruction)
-        if called is None or index == 0 or index + 1 >= len(item_instructions):
-            continue
-        before = item_instructions[index - 1]
-        after = item_instructions[index + 1]
-        backing = memory_base_and_disp(before, 1) if before.mnemonic == "mov" else None
-        flags = memory_base_and_disp(after, 1) if after.mnemonic == "mov" else None
-        if (register_name(before, 0) == "rcx" and backing and backing[0] == "r14" and
-                register_name(after, 0) == "eax" and flags and flags[0] == "rax"):
-            metadata_candidates.append((called, backing[1], flags[1], index))
-    if len(metadata_candidates) != 1:
-        raise ValueError(f"item metadata call expected once near child activation, found "
-                         f"{len(metadata_candidates)}")
-    item_metadata, panel_backing_offset, metadata_flags_offset, metadata_call_index = \
-        metadata_candidates[0]
-    item_flag_values = []
-    for instruction in item_instructions[max(0, metadata_call_index - 12):metadata_call_index]:
-        if instruction.mnemonic != "mov" or len(instruction.operands) != 2:
-            continue
-        memory = memory_base_and_disp(instruction, 1)
-        if register_name(instruction, 0) == "edx" and memory and memory[0] == "rcx":
-            item_flag_values.append(memory[1])
-    item_flags_offset = unique_value(item_flag_values, "item flags offset")
-
-    item_interaction_call_sites = []
-    for site in instruction_starts:
-        if target.read(site, 1) == b"\xE8" and target.decode_call(site) == item_interaction:
-            item_interaction_call_sites.append(site)
-    item_interaction_call_sites.sort()
-    if not 2 <= len(item_interaction_call_sites) <= 24:
-        raise ValueError(f"expected 2..24 item-interaction call sites, found "
-                         f"{len(item_interaction_call_sites)}")
-
-    sync_site = target.locate_signature("inspector synchronization", INSPECTOR_SYNC_SIGNATURE)
-    runtime_functions = target.runtime_functions()
-    sync_matches = [index for index, (begin, end) in enumerate(runtime_functions)
-                    if begin <= sync_site < end]
-    if len(sync_matches) != 1:
-        raise ValueError("inspector synchronization site has no unique runtime function")
-    sync_index = sync_matches[0]
-    while (sync_index and
-           runtime_functions[sync_index - 1][1] == runtime_functions[sync_index][0]):
-        sync_index -= 1
-    inspector_sync = runtime_functions[sync_index][0]
-    inspector_sync_call_sites = sorted(
-        site for site in instruction_starts
-        if target.read(site, 1) == b"\xE8" and target.decode_call(site) == inspector_sync)
-    if len(inspector_sync_call_sites) != 1:
-        raise ValueError("inspector synchronization entry expected one direct caller")
-    inspector_sync_call_site = inspector_sync_call_sites[0]
-    inspector_frame, inspector_frame_end = target.containing_runtime_function(
-        inspector_sync_call_site)
-    inspector_frame_instructions = list(decoder.disasm(
-        target.read(inspector_frame, inspector_frame_end - inspector_frame), inspector_frame))
-    sync_call_index = next(
-        index for index, instruction in enumerate(inspector_frame_instructions)
-        if instruction.address == inspector_sync_call_site)
-    child_render_calls = [
-        instruction for instruction in inspector_frame_instructions[sync_call_index + 1:]
-        if immediate_call_target(instruction) is not None]
-    if len(child_render_calls) != 1:
-        raise ValueError("inspector frame expected one child-render call after synchronization")
-    inspector_child_render_site = child_render_calls[0].address
-    panel_renderer = immediate_call_target(child_render_calls[0])
-    if panel_renderer is None or not target.in_text(panel_renderer):
-        raise ValueError("inspector child renderer is outside .text")
-    renderer_frame_calls = sorted(
-        site for site in instruction_starts
-        if target.read(site, 1) == b"\xE8" and target.decode_call(site) == inspector_frame)
-    if len(renderer_frame_calls) != 1:
-        raise ValueError("panel renderer expected one inspector-frame call")
-
-    inspector_renderer_call_sites = sorted(
-        site for site in instruction_starts
-        if target.read(site, 1) == b"\xE8" and target.decode_call(site) == inspector_renderer)
-    if not 2 <= len(inspector_renderer_call_sites) <= 8:
-        raise ValueError("Inspector renderer expected 2..8 direct surface call sites")
-    surface_roots = []
-    for site in inspector_renderer_call_sites:
-        matches = [index for index, (begin, end) in enumerate(runtime_functions)
-                   if begin <= site < end]
-        if len(matches) != 1:
-            raise ValueError("Inspector renderer call has no unique runtime function")
-        root_index = matches[0]
-        while (root_index and
-               runtime_functions[root_index - 1][1] == runtime_functions[root_index][0]):
-            root_index -= 1
-        surface_roots.append(runtime_functions[root_index][0])
-    panel_surface_renderer = unique_value(surface_roots, "panel surface renderer")
 
     panel_viewport_site = target.locate_signature(
         "panel viewport renderer", PANEL_VIEWPORT_SIGNATURE)
     panel_viewport_renderer, _ = target.containing_runtime_function(panel_viewport_site)
-    panel_viewport_call_sites = sorted(
-        site for site in instruction_starts
-        if target.read(site, 1) == b"\xE8" and
-        target.decode_call(site) == panel_viewport_renderer)
-    if not 1 <= len(panel_viewport_call_sites) <= 4:
-        raise ValueError("panel viewport renderer expected 1..4 direct surface calls")
-
-    surface_instructions = list(decoder.disasm(
-        target.read(panel_surface_renderer, 0x1000), panel_surface_renderer))
-
-    # The surface loads the global layout context and immediately reads its 16-bit phase. Derive
-    # both values so the payload can distinguish construction from paint without build constants.
-    phase_candidates = []
-    for index, instruction in enumerate(surface_instructions[:-1]):
-        following = surface_instructions[index + 1]
-        source = memory_base_and_disp(instruction, 1) \
-            if instruction.mnemonic == "mov" and len(instruction.operands) == 2 else None
-        phase = memory_base_and_disp(following, 1) \
-            if following.mnemonic == "movzx" and len(following.operands) == 2 else None
-        if (source and phase and register_name(instruction, 0) == "rcx" and
-                source[0] == "rip" and register_name(following, 0) == "eax" and
-                phase[0] == "rcx" and
-                following.operands[1].size == 2):
-            phase_candidates.append((instruction.address + instruction.size + source[1], phase[1]))
-    if len(set(phase_candidates)) != 1:
-        raise ValueError("panel surface expected one global layout-phase load")
-    layout_context_global, layout_phase_offset = phase_candidates[0]
-
-    # Header and slider-canvas calls both occur before the phase-0 and phase-1 viewport calls. The
-    # Header renderer is the common call closest to those viewport calls in both passes.
-    surface_calls: dict[int, list[int]] = {}
-    for instruction in surface_instructions:
-        called = immediate_call_target(instruction)
-        if called is not None:
-            surface_calls.setdefault(called, []).append(instruction.address)
-    header_candidates = []
-    for called, sites in surface_calls.items():
-        if len(sites) != len(panel_viewport_call_sites):
-            continue
-        ordered = sorted(sites)
-        if all(site < viewport and viewport - site < 0x80
-               for site, viewport in zip(ordered, panel_viewport_call_sites)):
-            header_candidates.append((sum(viewport - site for site, viewport
-                                          in zip(ordered, panel_viewport_call_sites)),
-                                      called, ordered))
-    if not header_candidates:
-        raise ValueError("panel Header renderer was not found before both viewport passes")
-    header_candidates.sort()
-    if len(header_candidates) > 1 and header_candidates[0][0] == header_candidates[1][0]:
-        raise ValueError("panel Header renderer ordering is ambiguous")
-    _, panel_header_renderer, panel_header_call_sites = header_candidates[0]
-
-    # The phase-0 surface constructs Footer after Header and immediately before Viewport. Unlike
-    # Header and Viewport it has no phase-1 call, so identify the sole direct call in that interval.
-    # Recursive Miller columns must construct it because the child-content renderer later resolves
-    # Panel/Footer/SliderButton to obtain its clipping geometry.
-    first_header_site = panel_header_call_sites[0]
-    first_viewport_site = panel_viewport_call_sites[0]
-    footer_candidates = [
-        (called, sites[0]) for called, sites in surface_calls.items()
-        if len(sites) == 1 and first_header_site < sites[0] < first_viewport_site
-    ]
-    if len(footer_candidates) != 1:
-        raise ValueError("panel Footer renderer was not uniquely found between Header and Viewport")
-    panel_footer_renderer, panel_footer_call_site = footer_candidates[0]
-
     viewport_instructions = list(decoder.disasm(
         target.read(panel_viewport_renderer, 0x400), panel_viewport_renderer))
     find_window_candidates = []
@@ -661,201 +476,6 @@ def discover_miller_layout(target: TargetImage, instruction_starts: set[int]) ->
                 register_name(following, 1) == "rax"):
             find_window_candidates.append(called)
     find_imgui_window = unique_value(find_window_candidates, "ImGui window lookup")
-    viewport_prefix = viewport_instructions[:12]
-    panel_identity_offset = unique_value([
-        memory_base_and_disp(instruction, 1)[1]
-        for instruction in viewport_prefix
-        if instruction.mnemonic == "mov" and len(instruction.operands) == 2 and
-        register_name(instruction, 0) == "r9" and
-        memory_base_and_disp(instruction, 1) and
-        memory_base_and_disp(instruction, 1)[0] == "rdx"
-    ], "panel identity offset")
-
-    sync_end = sync_site + 0x500
-    sync_instructions = list(decoder.disasm(target.read(sync_site, sync_end - sync_site),
-                                             sync_site))
-    sync_window = [instruction for instruction in sync_instructions
-                   if sync_site <= instruction.address < sync_site + 0x70]
-
-    panel_inspector_offset = unique_value([
-        memory_base_and_disp(instruction, 1)[1]
-        for instruction in sync_window
-        if instruction.mnemonic == "mov" and len(instruction.operands) == 2 and
-        register_name(instruction, 0) == "rcx" and
-        memory_base_and_disp(instruction, 1) and
-        memory_base_and_disp(instruction, 1)[0] == "rdi"
-    ], "panel inspector offset")
-    inspector_current_item_offset = unique_value([
-        memory_base_and_disp(instruction, 1)[1]
-        for instruction in sync_window
-        if instruction.mnemonic == "mov" and len(instruction.operands) == 2 and
-        register_name(instruction, 0) == "rbx" and
-        memory_base_and_disp(instruction, 1) and
-        memory_base_and_disp(instruction, 1)[0] == "rcx"
-    ], "inspector current-item offset")
-    inspector_mode_offset = unique_value([
-        memory_base_and_disp(instruction, 0)[1]
-        for instruction in sync_window
-        if instruction.mnemonic == "cmp" and len(instruction.operands) == 2 and
-        memory_base_and_disp(instruction, 0) and
-        memory_base_and_disp(instruction, 0)[0] == "rcx" and
-        memory_base_and_disp(instruction, 0)[1] >= 0x1000 and
-        instruction.operands[1].type == X86_OP_IMM and instruction.operands[1].imm == 2
-    ], "inspector mode offset")
-    inspector_backing_offset = unique_value([
-        memory_base_and_disp(instruction, 1)[1]
-        for instruction in sync_window
-        if instruction.mnemonic == "mov" and len(instruction.operands) == 2 and
-        register_name(instruction, 0) == "rcx" and
-        memory_base_and_disp(instruction, 1) and
-        memory_base_and_disp(instruction, 1)[0] == "rcx" and
-        memory_base_and_disp(instruction, 1)[1] >= 0x1000
-    ], "inspector backing offset")
-    metadata_path_offset = unique_value([
-        memory_base_and_disp(instruction, 1)[1]
-        for instruction in sync_window
-        if instruction.mnemonic == "movups" and len(instruction.operands) == 2 and
-        register_name(instruction, 0) == "xmm6" and
-        memory_base_and_disp(instruction, 1) and
-        memory_base_and_disp(instruction, 1)[0] == "rax"
-    ], "metadata path offset")
-
-    child_offsets = []
-    owner_offsets = []
-    sync_child_flags = []
-    panel_view_candidates = []
-    view_settings_candidates = []
-    navigate_candidates = []
-    for index, instruction in enumerate(sync_instructions):
-        if not sync_site <= instruction.address < sync_end:
-            continue
-        if instruction.mnemonic == "mov" and len(instruction.operands) == 2:
-            destination_memory = memory_base_and_disp(instruction, 0)
-            source_memory = memory_base_and_disp(instruction, 1)
-            if register_name(instruction, 0) == "rdx" and source_memory and \
-                    source_memory[0] == "rax" and source_memory[1] >= 0x1000:
-                child_offsets.append(source_memory[1])
-            if destination_memory and destination_memory[0] == "rcx" and \
-                    register_name(instruction, 1) == "rdi":
-                owner_offsets.append(destination_memory[1])
-            if destination_memory and destination_memory[0] == "rcx" and \
-                    register_name(instruction, 1) == "r15w" and \
-                    instruction.operands[0].size == 2:
-                sync_child_flags.append(destination_memory[1])
-            if register_name(instruction, 0) == "rax" and source_memory and \
-                    source_memory[0] == "rdi" and index + 1 < len(sync_instructions):
-                following = sync_instructions[index + 1]
-                if following.mnemonic == "add" and register_name(following, 0) == "rax" and \
-                        following.operands[1].type == X86_OP_IMM:
-                    panel_view_candidates.append(source_memory[1])
-                    view_settings_candidates.append(following.operands[1].imm)
-        called = immediate_call_target(instruction)
-        if called is not None and index >= 2:
-            previous = sync_instructions[index - 1]
-            earlier = sync_instructions[index - 2]
-            previous_memory = memory_base_and_disp(previous, 0) \
-                if previous.mnemonic == "mov" else None
-            earlier_memory = memory_base_and_disp(earlier, 0) \
-                if earlier.mnemonic in {"movdqa", "movaps"} else None
-            if (previous_memory and previous_memory[0] == "rsp" and
-                    previous_memory[1] == 0x20 and register_name(previous, 1) == "rax" and
-                    earlier_memory and earlier_memory[0] == "rsp" and
-                    earlier_memory[1] == 0x30):
-                navigate_candidates.append(called)
-
-    inspector_child_offset = unique_value(child_offsets, "inspector child offset")
-    child_owner_offset = unique_value(owner_offsets, "child owner offset")
-    sync_child_flag_offset = unique_value(sync_child_flags, "synchronized child flag offset")
-    if sync_child_flag_offset != child_flag_offset:
-        raise ValueError("child flag differs between inspector synchronization and item activation")
-    panel_view_offset = unique_value(panel_view_candidates, "panel view offset")
-    view_settings_offset = unique_value(view_settings_candidates, "view settings offset")
-    navigate_panel = unique_value(navigate_candidates, "panel navigation helper")
-    if item_metadata != unique_value([
-            immediate_call_target(instruction) for instruction in sync_window
-            if immediate_call_target(instruction) == item_metadata], "shared metadata helper"):
-        raise ValueError("inspector and item renderer use different metadata helpers")
-
-    # These two fields form the stable leading inspector layout block.  Their relationship is
-    # validated here and the remaining inspector fields are independently derived above.
-    inspector_extent_offset = 0x40
-    inspector_ratio_offset = inspector_extent_offset + 4
-    inspector_layout_offset = inspector_extent_offset + 8
-    inspector_width_offset = inspector_extent_offset + 0x10
-    panel_container_offset = child_flag_offset - 0x12
-    if panel_container_offset <= 0 or panel_container_offset % 8:
-        raise ValueError("panel container is not aligned before child marker")
-
-    inspector_surface_instructions = list(decoder.disasm(
-        target.read(inspector_renderer, 0x1000), inspector_renderer))
-
-    # PanelInspector is opened in both layout passes through the same stack-activation helper.
-    # The first of those two calls is the phase-0 seam: the node has just been constructed and is
-    # current until the native instructions immediately following the call pop it again.
-    activation_calls: dict[int, list[int]] = {}
-    for instruction in inspector_surface_instructions:
-        if instruction.address >= inspector_renderer + 0x600:
-            break
-        called = immediate_call_target(instruction)
-        if called is not None:
-            activation_calls.setdefault(called, []).append(instruction.address)
-    activation_candidates = [(called, sites) for called, sites in activation_calls.items()
-                             if len(sites) == 2]
-    if len(activation_candidates) != 1:
-        raise ValueError("Inspector layout activation expected one helper called twice in the "
-                         f"two-pass prefix, found {len(activation_candidates)}")
-    inspector_layout_activate, activation_sites = activation_candidates[0]
-    inspector_layout_activate_call_site = activation_sites[0]
-
-    child_surface_candidates = []
-    for index, instruction in enumerate(inspector_surface_instructions):
-        called = immediate_call_target(instruction)
-        if called is None:
-            continue
-        setup = inspector_surface_instructions[max(0, index - 8):index]
-        has_child_load = any(
-            candidate.mnemonic == "mov" and len(candidate.operands) == 2 and
-            register_name(candidate, 0) == "rdx" and
-            (memory := memory_base_and_disp(candidate, 1)) is not None and
-            memory[0] == "rdx" and memory[1] == inspector_child_offset
-            for candidate in setup)
-        has_window_argument = any(
-            candidate.mnemonic == "mov" and len(candidate.operands) == 2 and
-            register_name(candidate, 0) == "r8" and
-            register_name(candidate, 1) == "r14"
-            for candidate in setup)
-        if has_child_load and has_window_argument:
-            child_surface_candidates.append((called, instruction.address))
-    inspector_child_surface_renderer = unique_value(
-        [candidate[0] for candidate in child_surface_candidates],
-        "Inspector child surface renderer")
-    inspector_child_surface_site = unique_value(
-        [candidate[1] for candidate in child_surface_candidates],
-        "Inspector child surface call site")
-
-    # The panel renderer reads the current backing-model path as a StringView.  Validate the
-    # stable adjacent pointer/length members before exposing the pointer displacement to the
-    # recursive Inspector controller.
-    backing_path_offset = 0x168
-    # This large renderer is represented by several contiguous unwind regions, so inspect its
-    # bounded logical body rather than only the first prologue-sized .pdata entry.
-    renderer_instructions = list(decoder.disasm(
-        target.read(panel_renderer, 0x1000), panel_renderer))
-    has_backing_path_view = any(
-        (memory := memory_base_and_disp(instruction, operand_index)) is not None and
-        memory[1] == backing_path_offset and instruction.operands[operand_index].size >= 16
-        for instruction in renderer_instructions
-        for operand_index in range(len(instruction.operands))
-    )
-    if not has_backing_path_view:
-        raise ValueError("panel renderer does not expose the expected backing path StringView")
-
-    navigate_call_sites = sorted(
-        site for site in instruction_starts
-        if target.read(site, 1) == b"\xE8" and target.decode_call(site) == navigate_panel)
-    if not 4 <= len(navigate_call_sites) <= 64:
-        raise ValueError(f"expected 4..64 panel-navigation call sites, found "
-                         f"{len(navigate_call_sites)}")
 
     open_right = target.locate_signature("open in right split", OPEN_RIGHT_SIGNATURE)
     open_right_instructions = []
@@ -863,13 +483,6 @@ def discover_miller_layout(target: TargetImage, instruction_starts: set[int]) ->
         open_right_instructions.append(instruction)
         if instruction.mnemonic == "ret":
             break
-    open_right_calls = [immediate_call_target(instruction)
-                        for instruction in open_right_instructions
-                        if immediate_call_target(instruction) is not None]
-    if len(open_right_calls) != 2:
-        raise ValueError(f"right-split wrapper expected two direct calls, found "
-                         f"{len(open_right_calls)}")
-    open_selected_items = open_right_calls[-1]
     app_active_panel_offset = unique_value([
         memory_base_and_disp(instruction, 1)[1]
         for instruction in open_right_instructions
@@ -879,151 +492,22 @@ def discover_miller_layout(target: TargetImage, instruction_starts: set[int]) ->
         memory_base_and_disp(instruction, 1)[0] == "rcx"
     ], "active panel offset")
 
-    open_function_matches = [index for index, (begin, end) in enumerate(runtime_functions)
-                             if begin <= open_selected_items < end]
-    if len(open_function_matches) != 1:
-        raise ValueError("selected-item opener has no unique runtime function")
-    open_root_index = open_function_matches[0]
-    while (open_root_index and
-           runtime_functions[open_root_index - 1][1] ==
-           runtime_functions[open_root_index][0]):
-        open_root_index -= 1
-    open_end_index = open_root_index
-    while (open_end_index + 1 < len(runtime_functions) and
-           runtime_functions[open_end_index][1] == runtime_functions[open_end_index + 1][0]):
-        open_end_index += 1
-    open_root = runtime_functions[open_root_index][0]
-    open_end = runtime_functions[open_end_index][1]
-    open_instructions = list(decoder.disasm(target.read(open_root, open_end - open_root),
-                                             open_root))
-    open_selected_navigate_call_sites = sorted(
-        instruction.address for instruction in open_instructions
-        if immediate_call_target(instruction) == navigate_panel)
-    if not 1 <= len(open_selected_navigate_call_sites) <= 4:
-        raise ValueError("right-split opener expected 1..4 navigation call sites, found "
-                         f"{len(open_selected_navigate_call_sites)}")
-
-    runtime_functions = target.runtime_functions()
-    close_roots = []
-    for site in instruction_starts:
-        if target.read(site, 1) != b"\xE8" or target.decode_call(site) != begin_queued_command:
-            continue
-        if site < target.text_va + 5 or target.read(site - 5, 5) != b"\xBA\x55\x00\x00\x00":
-            continue
-        containing = [index for index, (begin, end) in enumerate(runtime_functions)
-                      if begin <= site < end]
-        if len(containing) != 1:
-            continue
-        root_index = containing[0]
-        while (root_index and
-               runtime_functions[root_index - 1][1] == runtime_functions[root_index][0]):
-            root_index -= 1
-        root = runtime_functions[root_index][0]
-        end_index = root_index
-        while (end_index + 1 < len(runtime_functions) and
-               runtime_functions[end_index][1] == runtime_functions[end_index + 1][0]):
-            end_index += 1
-        logical_end = runtime_functions[end_index][1]
-        root_instructions = list(decoder.disasm(target.read(root, logical_end - root), root))
-        has_event_two = any(
-            instruction.mnemonic == "cmp" and len(instruction.operands) == 2 and
-            register_name(instruction, 0) in {"r8d", "ebx"} and
-            instruction.operands[1].type == X86_OP_IMM and
-            instruction.operands[1].imm == 2
-            for instruction in root_instructions)
-        has_child_marker = any(
-            instruction.mnemonic == "cmp" and len(instruction.operands) == 2 and
-            memory_base_and_disp(instruction, 0) and
-            memory_base_and_disp(instruction, 0)[1] == child_flag_offset and
-            instruction.operands[0].size == 2
-            for instruction in root_instructions)
-        has_active_fallback = any(
-            instruction.mnemonic == "mov" and len(instruction.operands) == 2 and
-            memory_base_and_disp(instruction, 1) and
-            memory_base_and_disp(instruction, 1)[1] == app_active_panel_offset
-            for instruction in root_instructions)
-        if has_event_two and has_child_marker and has_active_fallback:
-            close_roots.append(root)
-    close_all_tabs = unique_value(close_roots, "close-all-tabs wrapper")
-
-    values = {
-        "item_interaction": item_interaction,
-        "item_interaction_call_sites": item_interaction_call_sites,
-        "begin_open_site": begin_open_site,
-        "begin_open_call_sites": begin_open_call_sites,
-        "begin_queued_command": begin_queued_command,
+    for label, value in (
+        ("selection cancel", selection_cancel),
+        ("cursor selection toggle", toggle_cursor_selection),
+        ("ImGui window lookup", find_imgui_window),
+    ):
+        if not target.in_text(value):
+            raise ValueError(f"discovered {label} 0x{value:x} is outside .text")
+    if not 0 <= app_active_panel_offset < 0x2000:
+        raise ValueError(
+            f"implausible active panel offset: 0x{app_active_panel_offset:x}")
+    return {
         "selection_cancel": selection_cancel,
         "toggle_cursor_selection": toggle_cursor_selection,
-        "open_selected_items": open_selected_items,
-        "open_selected_navigate_call_sites": open_selected_navigate_call_sites,
-        "close_all_tabs": close_all_tabs,
         "app_active_panel_offset": app_active_panel_offset,
-        "item_metadata": item_metadata,
-        "inspector_sync": inspector_sync,
-        "inspector_sync_call_site": inspector_sync_call_site,
-        "inspector_frame": inspector_frame,
-        "inspector_renderer": inspector_renderer,
-        "inspector_renderer_call_sites": inspector_renderer_call_sites,
-        "inspector_child_surface_renderer": inspector_child_surface_renderer,
-        "inspector_child_surface_site": inspector_child_surface_site,
-        "inspector_layout_activate": inspector_layout_activate,
-        "inspector_layout_activate_call_site": inspector_layout_activate_call_site,
-        "panel_surface_renderer": panel_surface_renderer,
-        "panel_viewport_renderer": panel_viewport_renderer,
-        "panel_viewport_call_sites": panel_viewport_call_sites,
-        "panel_header_renderer": panel_header_renderer,
-        "panel_header_call_sites": panel_header_call_sites,
-        "panel_footer_renderer": panel_footer_renderer,
-        "panel_footer_call_site": panel_footer_call_site,
-        "layout_context_global": layout_context_global,
-        "layout_phase_offset": layout_phase_offset,
         "find_imgui_window": find_imgui_window,
-        "panel_renderer": panel_renderer,
-        "inspector_child_render_site": inspector_child_render_site,
-        "navigate_panel": navigate_panel,
-        "navigate_call_sites": navigate_call_sites,
-        "panel_inspector_offset": panel_inspector_offset,
-        "panel_backing_offset": panel_backing_offset,
-        "panel_view_offset": panel_view_offset,
-        "panel_identity_offset": panel_identity_offset,
-        "panel_container_offset": panel_container_offset,
-        "child_owner_offset": child_owner_offset,
-        "child_flag_offset": child_flag_offset,
-        "inspector_extent_offset": inspector_extent_offset,
-        "inspector_ratio_offset": inspector_ratio_offset,
-        "inspector_layout_offset": inspector_layout_offset,
-        "inspector_width_offset": inspector_width_offset,
-        "inspector_mode_offset": inspector_mode_offset,
-        "inspector_current_item_offset": inspector_current_item_offset,
-        "inspector_backing_offset": inspector_backing_offset,
-        "inspector_child_offset": inspector_child_offset,
-        "view_settings_offset": view_settings_offset,
-        "item_flags_offset": item_flags_offset,
-        "metadata_path_offset": metadata_path_offset,
-        "metadata_flags_offset": metadata_flags_offset,
-        "backing_path_offset": backing_path_offset,
-        "panel_focused_item_offset": panel_focused_item_offset,
     }
-    for label, value in values.items():
-        if label.endswith("_call_sites") or label.endswith("_call_site"):
-            continue
-        if label in {"item_interaction", "begin_open_site", "begin_queued_command",
-                      "open_selected_items", "close_all_tabs", "item_metadata",
-                      "inspector_sync", "inspector_frame", "inspector_renderer",
-                      "inspector_child_surface_renderer", "inspector_child_surface_site",
-                      "inspector_layout_activate", "panel_surface_renderer",
-                      "panel_viewport_renderer", "panel_header_renderer",
-                      "panel_footer_renderer",
-                      "find_imgui_window", "panel_renderer",
-                      "inspector_child_render_site", "navigate_panel",
-                      "selection_cancel", "toggle_cursor_selection"}:
-            if not target.in_text(value):
-                raise ValueError(f"discovered Miller {label} 0x{value:x} is outside .text")
-        elif label == "layout_context_global":
-            target.read(value, 8)
-        elif value < 0 or value >= 0x2000:
-            raise ValueError(f"implausible Miller {label}: 0x{value:x}")
-    return values
 
 
 @dataclass
@@ -1038,7 +522,6 @@ class TargetLayout:
     live_wrapper: int
     live_call_sites: list[int]
     selector: int
-    selection_commit: int
     selection_cancel: int
     toggle_cursor_selection: int
     selection_state_display_offset: int
@@ -1046,106 +529,29 @@ class TargetLayout:
     display_primary_offset: int
     display_alternate_offset: int
     display_count_offset: int
-    panel_selection_mode_offset: int
-    item_interaction: int
-    item_interaction_call_sites: list[int]
-    begin_open_site: int
-    begin_open_call_sites: list[int]
-    begin_queued_command: int
-    open_selected_items: int
-    open_selected_navigate_call_sites: list[int]
-    close_all_tabs: int
     app_active_panel_offset: int
-    item_metadata: int
-    inspector_sync: int
-    inspector_sync_call_site: int
-    inspector_frame: int
-    inspector_renderer: int
-    inspector_renderer_call_sites: list[int]
-    inspector_child_surface_renderer: int
-    inspector_child_surface_site: int
-    inspector_layout_activate: int
-    inspector_layout_activate_call_site: int
-    panel_surface_renderer: int
-    panel_viewport_renderer: int
-    panel_viewport_call_sites: list[int]
-    panel_header_renderer: int
-    panel_header_call_sites: list[int]
-    panel_footer_renderer: int
-    panel_footer_call_site: int
-    layout_context_global: int
-    layout_phase_offset: int
     find_imgui_window: int
-    panel_renderer: int
-    inspector_child_render_site: int
-    navigate_panel: int
-    navigate_call_sites: list[int]
-    panel_inspector_offset: int
-    panel_backing_offset: int
-    panel_view_offset: int
-    panel_identity_offset: int
-    panel_container_offset: int
-    child_owner_offset: int
-    child_flag_offset: int
-    inspector_extent_offset: int
-    inspector_ratio_offset: int
-    inspector_layout_offset: int
-    inspector_width_offset: int
-    inspector_mode_offset: int
-    inspector_current_item_offset: int
-    inspector_backing_offset: int
-    inspector_child_offset: int
-    view_settings_offset: int
-    item_flags_offset: int
-    metadata_path_offset: int
-    metadata_flags_offset: int
-    backing_path_offset: int
-    panel_focused_item_offset: int
     imports: dict[str, int]
 
     def binding_values(self, include_tab: bool = True) -> list[int]:
         values = [BINDINGS_MAGIC, BINDINGS_VERSION, BINDINGS_QWORDS * 8]
         values.extend(self.imports[name] for name in IMPORT_BINDINGS)
-        values.extend((self.selector, self.original_initializer, self.live_wrapper,
-                       self.selection_commit, self.selection_cancel,
-                       self.toggle_cursor_selection, self.original_frame,
-                       self.selection_state_display_offset,
-                       self.display_mode_offset, self.display_primary_offset,
-                       self.display_alternate_offset, self.display_count_offset,
-                       self.panel_selection_mode_offset,
-                       self.item_interaction, self.begin_queued_command,
-                        self.item_metadata, self.inspector_sync, self.inspector_frame,
-                        self.inspector_renderer, self.inspector_child_surface_renderer,
-                        self.panel_surface_renderer, self.panel_viewport_renderer,
-                        self.find_imgui_window, self.panel_renderer,
-                        self.inspector_layout_activate, self.panel_header_renderer,
-                        self.panel_footer_renderer,
-                        self.layout_context_global, self.layout_phase_offset,
-                        self.navigate_panel,
-                       self.open_selected_items, self.close_all_tabs,
-                       self.app_active_panel_offset,
-                       self.panel_inspector_offset, self.panel_backing_offset,
-                       self.panel_view_offset, self.panel_identity_offset,
-                       self.panel_container_offset,
-                       self.child_owner_offset,
-                       self.child_flag_offset, self.inspector_extent_offset,
-                       self.inspector_ratio_offset,
-                       self.inspector_layout_offset, self.inspector_width_offset,
-                       self.inspector_mode_offset,
-                       self.inspector_current_item_offset, self.inspector_backing_offset,
-                       self.inspector_child_offset, self.view_settings_offset,
-                       self.item_flags_offset, self.metadata_path_offset,
-                       self.metadata_flags_offset, self.backing_path_offset,
-                       self.panel_focused_item_offset,
-                       int(include_tab),
-                       self.image_base + 0x185550 if include_tab else 0,
-                       self.image_base + 0x15F750 if include_tab else 0,
-                       self.image_base + 0x1846C0 if include_tab else 0,
-                       self.image_base + 0x1925B0 if include_tab else 0,
-                       self.image_base + TAB_SURFACE_RENDERER_RVA if include_tab else 0,
-                       self.image_base + INPUT_STATE_GLOBAL_RVA if include_tab else 0,
-                       self.image_base + FRAME_GENERATION_GLOBAL_RVA if include_tab else 0,
-                       self.image_base + TAB_HOVER_HELPER_RVA if include_tab else 0))
+        values.extend((
+            self.selector, self.original_initializer, self.live_wrapper,
+            self.selection_cancel, self.toggle_cursor_selection, self.original_frame,
+            self.selection_state_display_offset, self.display_mode_offset,
+            self.display_primary_offset, self.display_alternate_offset,
+            self.display_count_offset, self.app_active_panel_offset,
+            self.find_imgui_window, int(include_tab),
+            self.image_base + 0x185550 if include_tab else 0,
+            self.image_base + 0x15F750 if include_tab else 0,
+            self.image_base + 0x1846C0 if include_tab else 0,
+            self.image_base + 0x1925B0 if include_tab else 0,
+            self.image_base + TAB_SURFACE_RENDERER_RVA if include_tab else 0,
+            self.image_base + INPUT_STATE_GLOBAL_RVA if include_tab else 0,
+            self.image_base + FRAME_GENERATION_GLOBAL_RVA if include_tab else 0,
+            self.image_base + TAB_HOVER_HELPER_RVA if include_tab else 0,
+        ))
         if len(values) != BINDINGS_QWORDS:
             raise AssertionError(f"binding table has {len(values)} values")
         return values
@@ -1164,80 +570,18 @@ class TargetLayout:
             "live_selection_wrapper": address(self.live_wrapper),
             "live_selection_call_sites": [address(site) for site in self.live_call_sites],
             "selector": address(self.selector),
-            "selection_commit": address(self.selection_commit),
             "selection_cancel": address(self.selection_cancel),
             "toggle_cursor_selection": address(self.toggle_cursor_selection),
-            "miller": {
-                "item_interaction": address(self.item_interaction),
-                "item_interaction_call_sites": [address(site)
-                                                for site in self.item_interaction_call_sites],
-                "begin_open_hook_site": address(self.begin_open_site),
-                "begin_open_hook_sites": [address(site)
-                                          for site in self.begin_open_call_sites],
-                "begin_queued_command": address(self.begin_queued_command),
-                "open_selected_items": address(self.open_selected_items),
-                "open_selected_navigate_call_sites": [address(site)
-                                                       for site in self.open_selected_navigate_call_sites],
-                "close_all_tabs": address(self.close_all_tabs),
-                "item_metadata": address(self.item_metadata),
-                "inspector_sync": address(self.inspector_sync),
-                "inspector_sync_call_site": address(self.inspector_sync_call_site),
-                "inspector_frame": address(self.inspector_frame),
-                "inspector_renderer": address(self.inspector_renderer),
-                "inspector_renderer_call_sites": [address(site)
-                                                   for site in self.inspector_renderer_call_sites],
-                "inspector_child_surface_renderer":
-                    address(self.inspector_child_surface_renderer),
-                "inspector_child_surface_site": address(self.inspector_child_surface_site),
-                "inspector_layout_activate": address(self.inspector_layout_activate),
-                "inspector_layout_activate_call_site":
-                    address(self.inspector_layout_activate_call_site),
-                "panel_surface_renderer": address(self.panel_surface_renderer),
-                "panel_viewport_renderer": address(self.panel_viewport_renderer),
-                "panel_viewport_call_sites": [address(site)
-                                               for site in self.panel_viewport_call_sites],
-                "panel_header_renderer": address(self.panel_header_renderer),
-                "panel_header_call_sites": [address(site)
-                                             for site in self.panel_header_call_sites],
-                "panel_footer_renderer": address(self.panel_footer_renderer),
-                "panel_footer_call_site": address(self.panel_footer_call_site),
-                "layout_context_global": address(self.layout_context_global),
-                "layout_phase_offset": address(self.layout_phase_offset),
-                "find_imgui_window": address(self.find_imgui_window),
-                "panel_renderer": address(self.panel_renderer),
-                "inspector_child_render_site": address(self.inspector_child_render_site),
-                "navigate_panel": address(self.navigate_panel),
-                "navigate_call_sites": [address(site) for site in self.navigate_call_sites],
-            },
             "offsets": {
                 "selection_state_display": address(self.selection_state_display_offset),
                 "display_mode": address(self.display_mode_offset),
                 "display_primary": address(self.display_primary_offset),
                 "display_alternate": address(self.display_alternate_offset),
                 "display_count": address(self.display_count_offset),
-                "panel_selection_mode": address(self.panel_selection_mode_offset),
-                "panel_inspector": address(self.panel_inspector_offset),
-                "panel_backing": address(self.panel_backing_offset),
-                "panel_view": address(self.panel_view_offset),
-                "panel_identity": address(self.panel_identity_offset),
-                "panel_container": address(self.panel_container_offset),
-                "child_owner": address(self.child_owner_offset),
-                "child_flag": address(self.child_flag_offset),
-                "inspector_extent": address(self.inspector_extent_offset),
-                "inspector_ratio": address(self.inspector_ratio_offset),
-                "inspector_layout": address(self.inspector_layout_offset),
-                "inspector_width": address(self.inspector_width_offset),
-                "inspector_mode": address(self.inspector_mode_offset),
-                "inspector_current_item": address(self.inspector_current_item_offset),
-                "inspector_backing": address(self.inspector_backing_offset),
-                "inspector_child": address(self.inspector_child_offset),
-                "view_settings": address(self.view_settings_offset),
-                "item_flags": address(self.item_flags_offset),
-                "metadata_path": address(self.metadata_path_offset),
-                "metadata_flags": address(self.metadata_flags_offset),
-                "backing_path": address(self.backing_path_offset),
-                "panel_focused_item": address(self.panel_focused_item_offset),
                 "app_active_panel": address(self.app_active_panel_offset),
+            },
+            "tab_support": {
+                "find_imgui_window": address(self.find_imgui_window),
             },
             "iat": {name: address(value) for name, value in self.imports.items()},
         }
@@ -1299,46 +643,17 @@ def discover_layout(target: TargetImage) -> TargetLayout:
     display_alternate_offset = unique_value(alternate_offsets[:1], "alternate display offset")
     display_count_offset = unique_value(count_offsets[:1], "display-count offset")
     selector = unique_value(selector_candidates, "native selector")
-    selector_instructions = list(decoder.disasm(target.read(selector, 0x100), selector))
-    panel_selection_mode_offset = unique_value([
-        memory_base_and_disp(instruction, 1)[1]
-        for index, instruction in enumerate(selector_instructions[:-1])
-        if instruction.mnemonic == "mov" and len(instruction.operands) == 2 and
-        register_name(instruction, 0) == "eax" and
-        memory_base_and_disp(instruction, 1) and
-        memory_base_and_disp(instruction, 1)[0] == "rcx" and
-        selector_instructions[index + 1].mnemonic == "mov"
-    ], "panel selection-mode offset")
-    selection_commit_candidates = []
-    for index, instruction in enumerate(instructions):
-        if (instruction.mnemonic != "call" or not instruction.operands or
-                instruction.operands[0].type != X86_OP_IMM or
-                instruction.operands[0].imm != selector):
-            continue
-        for candidate_index in range(index + 1, min(index + 12, len(instructions))):
-            candidate = instructions[candidate_index]
-            if (candidate.mnemonic != "call" or not candidate.operands or
-                    candidate.operands[0].type != X86_OP_IMM):
-                continue
-            setup = {(item.mnemonic, item.op_str) for item in
-                     instructions[max(index + 1, candidate_index - 4):candidate_index]}
-            if {("mov", "rdx, rbx"), ("mov", "rcx, rbp")}.issubset(setup):
-                selection_commit_candidates.append(candidate.operands[0].imm)
-    selection_commit = unique_value(selection_commit_candidates, "selection commit helper")
     for label, value in (
         ("selection-state display offset", selection_state_display_offset),
         ("display-mode offset", display_mode_offset),
         ("primary display offset", display_primary_offset),
         ("alternate display offset", display_alternate_offset),
         ("display-count offset", display_count_offset),
-        ("panel selection-mode offset", panel_selection_mode_offset),
     ):
         if value < 0 or value >= 0x1000 or value % 8:
             raise ValueError(f"implausible {label}: 0x{value:x}")
     if not target.in_text(selector):
         raise ValueError(f"native selector 0x{selector:x} is outside .text")
-    if not target.in_text(selection_commit):
-        raise ValueError(f"selection commit helper 0x{selection_commit:x} is outside .text")
 
     instruction_starts = target.instruction_starts()
     live_call_sites = []
@@ -1351,52 +666,16 @@ def discover_layout(target: TargetImage) -> TargetLayout:
     if startup_site in live_call_sites or frame_site in live_call_sites:
         raise ValueError("hook-site cross-reference sets overlap unexpectedly")
 
-    miller = discover_miller_layout(target, instruction_starts)
-    if set(miller["item_interaction_call_sites"]) & set(live_call_sites):
-        raise ValueError("Miller and live-selection call-site sets overlap unexpectedly")
+    support = discover_runtime_support(target, instruction_starts)
 
     return TargetLayout(
         target.digest, KNOWN_SHA256.get(target.digest), target.image_base,
         startup_site, original_initializer, frame_site, original_frame, live_wrapper,
-        live_call_sites, selector, selection_commit, miller["selection_cancel"],
-        miller["toggle_cursor_selection"], selection_state_display_offset,
-        display_mode_offset,
-        display_primary_offset, display_alternate_offset, display_count_offset,
-        panel_selection_mode_offset,
-        miller["item_interaction"], miller["item_interaction_call_sites"],
-        miller["begin_open_site"], miller["begin_open_call_sites"],
-        miller["begin_queued_command"], miller["open_selected_items"],
-        miller["open_selected_navigate_call_sites"], miller["close_all_tabs"],
-        miller["app_active_panel_offset"],
-        miller["item_metadata"], miller["inspector_sync"],
-        miller["inspector_sync_call_site"], miller["inspector_frame"],
-        miller["inspector_renderer"], miller["inspector_renderer_call_sites"],
-        miller["inspector_child_surface_renderer"],
-        miller["inspector_child_surface_site"],
-        miller["inspector_layout_activate"],
-        miller["inspector_layout_activate_call_site"],
-        miller["panel_surface_renderer"], miller["panel_viewport_renderer"],
-        miller["panel_viewport_call_sites"], miller["panel_header_renderer"],
-        miller["panel_header_call_sites"], miller["panel_footer_renderer"],
-        miller["panel_footer_call_site"], miller["layout_context_global"],
-        miller["layout_phase_offset"], miller["find_imgui_window"],
-        miller["panel_renderer"],
-        miller["inspector_child_render_site"],
-        miller["navigate_panel"], miller["navigate_call_sites"],
-        miller["panel_inspector_offset"], miller["panel_backing_offset"],
-        miller["panel_view_offset"], miller["panel_identity_offset"],
-        miller["panel_container_offset"],
-        miller["child_owner_offset"],
-        miller["child_flag_offset"], miller["inspector_extent_offset"],
-        miller["inspector_ratio_offset"],
-        miller["inspector_layout_offset"], miller["inspector_width_offset"],
-        miller["inspector_mode_offset"],
-        miller["inspector_current_item_offset"], miller["inspector_backing_offset"],
-        miller["inspector_child_offset"], miller["view_settings_offset"],
-        miller["item_flags_offset"], miller["metadata_path_offset"],
-        miller["metadata_flags_offset"], miller["backing_path_offset"],
-        miller["panel_focused_item_offset"],
-        target.import_iat(),
+        live_call_sites, selector, support["selection_cancel"],
+        support["toggle_cursor_selection"], selection_state_display_offset,
+        display_mode_offset, display_primary_offset, display_alternate_offset,
+        display_count_offset, support["app_active_panel_offset"],
+        support["find_imgui_window"], target.import_iat(),
     )
 
 
@@ -1423,13 +702,8 @@ def build_payload_image(payload: bytes, target_base: int, section_rva: int,
         raise ValueError("payload was linked at the wrong image base")
     exports = {name: find_export(payload, optional, sections, name.encode("ascii"))
                for name in ("Hook", "FrameHook", "LiveSelectionHook",
-                             "ItemInteractionHook", "BeginOpenHook",
-                              "MillerNavigateHook", "MillerInspectorSyncHook",
-                              "RecursiveInspectorRenderHook", "PanelViewportHook",
-                              "PanelInspectorSurfaceHook", "InspectorPhase0ActivateHook",
-                              "RecursiveInspectorChildSurfaceHook", "PanelHeaderHook",
-                              "CrossWindowTryTransfer", "CrossWindowPreviewPulse",
-                              "RemoteTabSurfaceHook", "RemoteTabHoverHook", "Bindings")}
+                             "CrossWindowTryTransfer", "CrossWindowPreviewPulse",
+                             "RemoteTabSurfaceHook", "RemoteTabHoverHook", "Bindings")}
     image_size = u32(payload, optional + 56)
     mapped = bytearray(image_size - PAYLOAD_FIRST_RVA)
     for section in sections:
@@ -1470,6 +744,179 @@ def build_payload_image(payload: bytes, target_base: int, section_rva: int,
     return mapped, exports
 
 
+@dataclass(frozen=True)
+class UnicodeLayout:
+    glyph_lookup: int
+    glyph_lookup_call_sites: tuple[int, ...]
+    measure_text: int
+    measure_text_call_sites: tuple[int, ...]
+    render_text: int
+    render_text_call_sites: tuple[int, ...]
+    font_create_atlas: int
+    font_create_atlas_call_sites: tuple[int, ...]
+    font_rasterizer: int
+    utf16_to_utf8: int
+    input_conversion_call_site: int
+    range_table: int
+    d3d_create_device: int
+    d3d_create_device_call_sites: tuple[int, ...]
+    d3d_render_frame: int
+    d3d_render_frame_call_site: int
+    d3d_renderer_global: int
+
+    def report(self) -> dict:
+        address = lambda value: f"0x{value:x}"
+        return {
+            "profile": "fixed DirectWrite-shaped D3D11 glyph-mask atlas",
+            "glyph_lookup": address(self.glyph_lookup),
+            "glyph_lookup_call_sites": [address(value)
+                                        for value in self.glyph_lookup_call_sites],
+            "measure_text": address(self.measure_text),
+            "measure_text_call_sites": [address(value)
+                                         for value in self.measure_text_call_sites],
+            "render_text": address(self.render_text),
+            "render_text_call_sites": [address(value)
+                                        for value in self.render_text_call_sites],
+            "font_create_atlas": address(self.font_create_atlas),
+            "font_create_atlas_call_sites": [address(value)
+                                              for value in self.font_create_atlas_call_sites],
+            "font_rasterizer": address(self.font_rasterizer),
+            "input_conversion_call_site": address(self.input_conversion_call_site),
+            "range_table": address(self.range_table),
+            "d3d_create_device_call_sites": [address(value)
+                                              for value in self.d3d_create_device_call_sites],
+            "d3d_render_frame_call_site": address(self.d3d_render_frame_call_site),
+            "d3d_renderer_global": address(self.d3d_renderer_global),
+            "atlas_policy": "compact native ranges with visible-row shaping and mask caching",
+        }
+
+
+def direct_call_sites(target: TargetImage, instruction_starts: set[int], destination: int) -> tuple[int, ...]:
+    return tuple(sorted(
+        site for site in instruction_starts
+        if target.read(site, 1) == b"\xE8" and target.decode_call(site) == destination
+    ))
+
+
+def discover_unicode_layout(target: TargetImage) -> UnicodeLayout:
+    if target.digest not in UNICODE_SUPPORTED_SHA256:
+        raise ValueError(
+            "Unicode patch has no verified profile for input SHA-256 " + target.digest)
+    starts = target.instruction_starts()
+    base = target.image_base
+    glyph_lookup = base + UNICODE_GLYPH_LOOKUP_RVA
+    measure_text = base + UNICODE_MEASURE_TEXT_RVA
+    render_text = base + UNICODE_RENDER_TEXT_RVA
+    font_create_atlas = base + UNICODE_FONT_CREATE_ATLAS_RVA
+    font_rasterizer = base + UNICODE_FONT_RASTERIZER_RVA
+    utf16_to_utf8 = base + UNICODE_UTF16_TO_UTF8_RVA
+    glyph_calls = direct_call_sites(target, starts, glyph_lookup)
+    measure_calls = direct_call_sites(target, starts, measure_text)
+    render_calls = direct_call_sites(target, starts, render_text)
+    font_calls = direct_call_sites(target, starts, font_create_atlas)
+    rasterizer_calls = direct_call_sites(target, starts, font_rasterizer)
+    wrapper_rasterizer_calls = tuple(site for site in rasterizer_calls
+                                     if font_create_atlas <= site < font_create_atlas + 0xC2)
+    if len(wrapper_rasterizer_calls) != 1:
+        raise ValueError("Unicode font wrapper no longer has one native rasterizer call")
+    expected_counts = {
+        "glyph lookup": (len(glyph_calls), 5),
+        "text measurement": (len(measure_calls), 38),
+        "text renderer": (len(render_calls), 1),
+        "font atlas": (len(font_calls), 3),
+    }
+    for label, (actual, expected) in expected_counts.items():
+        if actual != expected:
+            raise ValueError(f"Unicode {label} expected {expected} direct calls, found {actual}")
+    input_call = base + UNICODE_INPUT_CONVERSION_CALL_RVA
+    if target.decode_call(input_call) != utf16_to_utf8:
+        raise ValueError("Unicode WM_CHAR conversion seam no longer calls the UTF-16 codec")
+    for rva, expected in UNICODE_CARET_CLAMPS.items():
+        if target.read(base + rva, len(expected)) != expected:
+            raise ValueError(f"Unicode caret clamp changed at 0x{base + rva:x}")
+    expected_ranges = b"".join(struct.pack("<II", low, high)
+                               for low, high in UNICODE_ORIGINAL_RANGES)
+    range_table = base + UNICODE_RANGE_TABLE_RVA
+    if target.read(range_table, len(expected_ranges)) != expected_ranges:
+        raise ValueError("Unicode glyph range table no longer matches the verified layout")
+    d3d_create_device = base + UNICODE_D3D_CREATE_DEVICE_RVA
+    d3d_create_calls = direct_call_sites(target, starts, d3d_create_device)
+    expected_d3d_calls = (base + 0x4892B, base + 0x4897A)
+    if d3d_create_calls != expected_d3d_calls:
+        raise ValueError("Unicode renderer expected the two verified D3D11CreateDevice calls")
+    d3d_render_frame = base + UNICODE_D3D_RENDER_FRAME_RVA
+    d3d_render_call = base + UNICODE_D3D_RENDER_FRAME_CALL_RVA
+    if target.decode_call(d3d_render_call) != d3d_render_frame:
+        raise ValueError("Unicode renderer D3D pre-Present seam changed")
+    return UnicodeLayout(
+        glyph_lookup, glyph_calls, measure_text, measure_calls, render_text, render_calls,
+        font_create_atlas, font_calls, font_rasterizer, utf16_to_utf8, input_call, range_table,
+        d3d_create_device, d3d_create_calls, d3d_render_frame, d3d_render_call,
+        base + UNICODE_D3D_RENDERER_GLOBAL_RVA)
+
+
+def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva: int,
+                                layout: UnicodeLayout):
+    _, _, optional, _, sections = pe_layout(payload)
+    payload_image_base = u64(payload, optional + 24)
+    exports = {name: find_export(payload, optional, sections, name.encode("ascii"))
+               for name in ("UnicodeGlyphLookupHook", "UnicodeMeasureTextHook",
+                            "UnicodeRenderTextHook", "UnicodeFontCreateAtlasHook",
+                            "UnicodeUtf16ToUtf8Hook", "UnicodeD3D11CreateDeviceHook",
+                            "UnicodeD3DRenderFrameHook", "UnicodeDebug",
+                            "UnicodeExperiment", "Bindings")}
+    image_size = u32(payload, optional + 56)
+    mapped = bytearray(image_size - UNICODE_PAYLOAD_FIRST_RVA)
+    for section in sections:
+        if section.rva < UNICODE_PAYLOAD_FIRST_RVA or not section.raw_size:
+            continue
+        relative = section.rva - UNICODE_PAYLOAD_FIRST_RVA
+        mapped[relative:relative + section.raw_size] = \
+            payload[section.raw:section.raw + section.raw_size]
+
+    delta = (target.image_base + section_rva) - \
+        (payload_image_base + UNICODE_PAYLOAD_FIRST_RVA)
+    reloc_rva = u32(payload, optional + 112 + 5 * 8)
+    reloc_size = u32(payload, optional + 112 + 5 * 8 + 4)
+    cursor = rva_to_file(sections, reloc_rva)
+    limit = cursor + reloc_size
+    while cursor + 8 <= limit:
+        page_rva, block_size = struct.unpack_from("<II", payload, cursor)
+        if not page_rva or block_size < 8 or cursor + block_size > limit:
+            break
+        for entry_off in range(cursor + 8, cursor + block_size, 2):
+            entry = u16(payload, entry_off)
+            kind, offset = entry >> 12, entry & 0xFFF
+            if kind == 0:
+                continue
+            if kind != 10:
+                raise ValueError(f"unsupported Unicode payload relocation type {kind}")
+            mapped_off = page_rva + offset - UNICODE_PAYLOAD_FIRST_RVA
+            struct.pack_into("<Q", mapped, mapped_off, u64(mapped, mapped_off) + delta)
+        cursor += block_size
+
+    imports = target.resolve_import_iat((
+        "LoadLibraryW", "GetProcAddress", "GetFileAttributesW", "VirtualAlloc", "VirtualFree",
+        "D3D11CreateDevice"))
+    binding_values = [
+        UNICODE_BINDINGS_MAGIC, UNICODE_BINDINGS_VERSION, UNICODE_BINDINGS_QWORDS * 8,
+        imports["LoadLibraryW"], imports["GetProcAddress"], imports["GetFileAttributesW"],
+        imports["VirtualAlloc"], imports["VirtualFree"], layout.glyph_lookup,
+        layout.measure_text, layout.render_text, layout.font_create_atlas,
+        layout.font_rasterizer, layout.utf16_to_utf8, layout.range_table,
+        imports["D3D11CreateDevice"], layout.d3d_render_frame, layout.d3d_renderer_global,
+    ]
+    if len(binding_values) != UNICODE_BINDINGS_QWORDS:
+        raise AssertionError("Unicode binding table length changed")
+    binding_off = exports["Bindings"] - UNICODE_PAYLOAD_FIRST_RVA
+    existing = struct.unpack_from("<QQQ", mapped, binding_off)
+    expected = (UNICODE_BINDINGS_MAGIC, UNICODE_BINDINGS_VERSION, UNICODE_BINDINGS_QWORDS * 8)
+    if existing != expected:
+        raise ValueError(f"Unicode payload binding header mismatch: {existing!r}")
+    struct.pack_into("<" + "Q" * UNICODE_BINDINGS_QWORDS, mapped, binding_off, *binding_values)
+    return mapped, exports
+
+
 def patch_call(data: bytearray, target: TargetImage, sections: list[SectionRecord],
                site_va: int, expected_target: int, replacement_target: int, label: str):
     site_file = rva_to_file(sections, site_va - target.image_base)
@@ -1486,40 +933,87 @@ def patch_call(data: bytearray, target: TargetImage, sections: list[SectionRecor
     data[site_file:site_file + 5] = b"\xE8" + struct.pack("<i", displacement)
 
 
+def patch_exact_bytes(data: bytearray, sections: list[SectionRecord], image_base: int,
+                      site_va: int, expected: bytes, replacement: bytes, label: str):
+    if len(expected) != len(replacement):
+        raise ValueError(f"{label} replacement length changed")
+    site_file = rva_to_file(sections, site_va - image_base)
+    actual = bytes(data[site_file:site_file + len(expected)])
+    if actual != expected:
+        raise ValueError(f"{label} site 0x{site_va:x} changed: {actual.hex()}")
+    data[site_file:site_file + len(replacement)] = replacement
+
+
+def apply_unicode_patch(output: bytearray, target: TargetImage, sections: list[SectionRecord],
+                        layout: UnicodeLayout, payload_va: int, exports: dict[str, int]) -> dict:
+    hooks = {
+        "glyph lookup": payload_va + exports["UnicodeGlyphLookupHook"],
+        "text measurement": payload_va + exports["UnicodeMeasureTextHook"],
+        "text renderer": payload_va + exports["UnicodeRenderTextHook"],
+        "font atlas": payload_va + exports["UnicodeFontCreateAtlasHook"],
+        "WM_CHAR UTF-16 conversion": payload_va + exports["UnicodeUtf16ToUtf8Hook"],
+        "D3D11 device creation": payload_va + exports["UnicodeD3D11CreateDeviceHook"],
+        "D3D pre-Present overlay": payload_va + exports["UnicodeD3DRenderFrameHook"],
+    }
+    for site in layout.glyph_lookup_call_sites:
+        patch_call(output, target, sections, site, layout.glyph_lookup,
+                   hooks["glyph lookup"], "Unicode glyph lookup")
+    for site in layout.measure_text_call_sites:
+        patch_call(output, target, sections, site, layout.measure_text,
+                   hooks["text measurement"], "Unicode text measurement")
+    for site in layout.render_text_call_sites:
+        patch_call(output, target, sections, site, layout.render_text,
+                   hooks["text renderer"], "Unicode text renderer")
+    for site in layout.font_create_atlas_call_sites:
+        patch_call(output, target, sections, site, layout.font_create_atlas,
+                   hooks["font atlas"], "Unicode font atlas")
+    patch_call(output, target, sections, layout.input_conversion_call_site,
+               layout.utf16_to_utf8, hooks["WM_CHAR UTF-16 conversion"],
+               "Unicode WM_CHAR conversion")
+    for site in layout.d3d_create_device_call_sites:
+        patch_call(output, target, sections, site, layout.d3d_create_device,
+                   hooks["D3D11 device creation"], "Unicode D3D11 device creation")
+    patch_call(output, target, sections, layout.d3d_render_frame_call_site,
+               layout.d3d_render_frame, hooks["D3D pre-Present overlay"],
+               "Unicode D3D pre-Present overlay")
+
+    for rva, expected in UNICODE_CARET_CLAMPS.items():
+        patch_exact_bytes(output, sections, target.image_base, target.image_base + rva,
+                          expected, b"\x90" * len(expected), "Unicode caret clamp")
+    old_ranges = b"".join(struct.pack("<II", low, high)
+                          for low, high in UNICODE_ORIGINAL_RANGES)
+    new_ranges = b"".join(struct.pack("<II", low, high)
+                          for low, high in UNICODE_INITIAL_RANGES)
+    patch_exact_bytes(output, sections, target.image_base, layout.range_table,
+                      old_ranges, new_ranges, "Unicode glyph range table")
+    report = layout.report()
+    report["hooks"] = {name: f"0x{address:x}" for name, address in hooks.items()}
+    report["caret_ascii_clamps_removed"] = len(UNICODE_CARET_CLAMPS)
+    report["renderer"] = "d3d-atlas"
+    report["renderer_selection"] = "fixed"
+    report["telemetry_rva"] = (
+        f"0x{payload_va + exports['UnicodeExperiment'] - target.image_base:x}")
+    return report
+
+
 def choose_section_rva(target: TargetImage) -> int:
     end = max(section.rva + max(section.vsize, section.raw_size) for section in target.sections)
     return align(end, target.section_alignment)
 
 
-def miller_call_sites(layout: TargetLayout) -> list[int]:
-    """Return every native call site reserved for the separate Miller experiment."""
-    sites = {
-        *layout.item_interaction_call_sites,
-        *layout.begin_open_call_sites,
-        layout.inspector_sync_call_site,
-        layout.inspector_child_render_site,
-        layout.inspector_layout_activate_call_site,
-        layout.inspector_child_surface_site,
-        *layout.panel_viewport_call_sites,
-        *layout.panel_header_call_sites,
-        *layout.inspector_renderer_call_sites,
-        *layout.navigate_call_sites,
-    }
-    return sorted(sites)
-
-
-def verify_miller_unmodified(output: bytearray, sections: list[SectionRecord],
-                             target: TargetImage, layout: TargetLayout) -> int:
-    sites = miller_call_sites(layout)
-    for site in sites:
-        output_file = rva_to_file(sections, site - target.image_base)
-        if bytes(output[output_file:output_file + 5]) != target.read(site, 5):
-            raise ValueError(f"Miller separation guard detected a modified call at 0x{site:x}")
-    return len(sites)
+def build_profile_name(include_tab: bool, include_unicode: bool) -> str:
+    if include_tab and include_unicode:
+        return "all"
+    if include_tab:
+        return "open-location-and-tabs"
+    if include_unicode:
+        return "open-location-and-unicode"
+    return "open-location-only"
 
 
 def patch(target_path: Path, payload_path: Path, output_path: Path,
-          layout_path: Path | None = None, include_tab: bool = True):
+          layout_path: Path | None = None, include_tab: bool = True,
+          include_unicode: bool = False, unicode_payload_path: Path | None = None):
     target = TargetImage(target_path)
     if include_tab and target.digest not in TAB_SUPPORTED_SHA256:
         raise ValueError(
@@ -1527,12 +1021,17 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
             f"{target.digest}; use --open-location-only for structurally compatible builds")
     layout = discover_layout(target)
     report = layout.report()
+    report["build_profile"] = build_profile_name(include_tab, include_unicode)
     report["patches"] = {
         "open_file_location": True,
         "tab_window_creation": include_tab,
         "cross_window_tab_merge": include_tab,
-        "miller_navigation": False,
     }
+    if include_unicode:
+        report["patches"]["unicode_text"] = True
+        if unicode_payload_path is None:
+            raise ValueError("Unicode patch requires --unicode-payload")
+    unicode_layout = discover_unicode_layout(target) if include_unicode else None
 
     section_rva = choose_section_rva(target)
     mapped, exports = build_payload_image(payload_path.read_bytes(), target.image_base,
@@ -1546,6 +1045,21 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
     if added.virtual_address != section_rva:
         raise ValueError(f"LIEF assigned unexpected payload RVA 0x{added.virtual_address:x}; "
                          f"expected 0x{section_rva:x}")
+    unicode_section_rva = 0
+    unicode_exports: dict[str, int] = {}
+    if unicode_layout is not None and unicode_payload_path is not None:
+        unicode_section_rva = align(section_rva + len(mapped), target.section_alignment)
+        unicode_mapped, unicode_exports = build_unicode_payload_image(
+            unicode_payload_path.read_bytes(), target, unicode_section_rva, unicode_layout)
+        unicode_section = lief.PE.Section(".fpu")
+        unicode_section.content = list(unicode_mapped)
+        unicode_section.virtual_address = unicode_section_rva
+        unicode_section.characteristics = 0xE0000060
+        unicode_added = binary.add_section(unicode_section)
+        if unicode_added.virtual_address != unicode_section_rva:
+            raise ValueError(
+                f"LIEF assigned unexpected Unicode payload RVA 0x{unicode_added.virtual_address:x}; "
+                f"expected 0x{unicode_section_rva:x}")
     # LIEF writes to a private sibling first. A failed tab validation therefore
     # cannot leave a misleading Open-Location-only executable at the requested
     # combined output path.
@@ -1582,6 +1096,10 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
     for site in layout.live_call_sites:
         patch_call(output, target, sections, site, layout.live_wrapper,
                    live_hook_va, "live selection")
+    if unicode_layout is not None:
+        unicode_payload_va = target.image_base + unicode_section_rva - UNICODE_PAYLOAD_FIRST_RVA
+        report["unicode"] = apply_unicode_patch(
+            output, target, sections, unicode_layout, unicode_payload_va, unicode_exports)
     if include_tab:
         original_tab_surface = target.image_base + TAB_SURFACE_RENDERER_RVA
         for call_rva in TAB_SURFACE_CALL_RVAS:
@@ -1606,11 +1124,6 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
         report["tab_tearoff"] = apply_tab_patch(
             output, target.digest, cross_window_transfer_rva,
             cross_window_preview_rva)
-    report["miller_separation_guard"] = {
-        "modified_call_sites": 0,
-        "verified_native_call_sites": verify_miller_unmodified(
-            output, sections, target, layout),
-    }
     if layout_path:
         layout_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
@@ -1619,19 +1132,23 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
     print(f"SHA-256 {hashlib.sha256(output).hexdigest()}")
 
 
-def analyze(target_path: Path, layout_path: Path | None = None, include_tab: bool = True):
+def analyze(target_path: Path, layout_path: Path | None = None, include_tab: bool = True,
+            include_unicode: bool = False):
     target = TargetImage(target_path)
     if include_tab and target.digest not in TAB_SUPPORTED_SHA256:
         raise ValueError(
             "tab tear-off patch has no verified profile for input SHA-256 "
             f"{target.digest}; use --open-location-only to analyze only the structural patch")
     report = discover_layout(target).report()
+    report["build_profile"] = build_profile_name(include_tab, include_unicode)
     report["patches"] = {
         "open_file_location": True,
         "tab_window_creation": include_tab,
         "cross_window_tab_merge": include_tab,
-        "miller_navigation": False,
     }
+    if include_unicode:
+        report["patches"]["unicode_text"] = True
+        report["unicode"] = discover_unicode_layout(target).report()
     if include_tab:
         report["tab_tearoff"] = {
             "profile": TAB_SUPPORTED_SHA256[target.digest],
@@ -1651,19 +1168,29 @@ def main():
                         help="write the discovered target layout as JSON")
     parser.add_argument("--open-location-only", action="store_true",
                         help="omit all tab patches and emit only Open File Location integration")
+    parser.add_argument(
+        "--all", action="store_true",
+        help="emit Open File Location, tab creation/merge, and the D3D-atlas Unicode renderer")
+    parser.add_argument("--unicode-payload", type=Path,
+                        help="compiled unicode_payload.dll used with --all")
     parser.add_argument("input", type=Path, help="unpatched File Pilot executable")
     parser.add_argument("payload", type=Path, nargs="?", help="compiled payload DLL")
     parser.add_argument("output", type=Path, nargs="?", help="patched standalone executable")
     args = parser.parse_args()
+    if args.all and args.open_location_only:
+        parser.error("--all cannot be combined with --open-location-only")
+    include_unicode = args.all
     if args.analyze:
         if args.payload or args.output:
             parser.error("--analyze accepts only the input executable")
-        analyze(args.input, args.layout_json, not args.open_location_only)
+        analyze(args.input, args.layout_json, not args.open_location_only, include_unicode)
         return
     if not args.payload or not args.output:
         parser.error("patch mode requires input, payload, and output paths")
+    if include_unicode and not args.unicode_payload:
+        parser.error("--all requires --unicode-payload")
     patch(args.input, args.payload, args.output, args.layout_json,
-          not args.open_location_only)
+          not args.open_location_only, include_unicode, args.unicode_payload)
 
 
 if __name__ == "__main__":

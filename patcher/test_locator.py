@@ -38,6 +38,34 @@ class MaskedPatternTests(unittest.TestCase):
         self.assertEqual(patcher.find_masked(bytes(concrete), specification), [])
 
 
+class UnicodeRendererSourceTests(unittest.TestCase):
+    def test_combined_profile_has_stable_name(self):
+        self.assertEqual(patcher.build_profile_name(True, True), "all")
+
+    def test_d3d_atlas_uses_premultiplied_native_blending(self):
+        shader = (HERE / "unicode_mask.hlsl").read_text(encoding="utf-8")
+        payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
+        self.assertIn("return input.color * glyphMask.Sample", shader)
+        self.assertIn(
+            "blend.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;", payload)
+        self.assertIn(
+            "blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;",
+            payload)
+
+    def test_overlay_queue_coalesces_replayed_labels(self):
+        payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
+        self.assertIn("5, ExperimentInitialized", payload)
+        self.assertIn("UnicodeExperiment.overlayCoalesced++;", payload)
+        self.assertIn("queued.color[component] = candidate.color[component];", payload)
+
+    def test_d3d_atlas_is_the_only_runtime_renderer(self):
+        payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("FPILOT_UNICODE_RENDERER", payload)
+        self.assertNotIn("EnsureExperimentMode", payload)
+        self.assertIn("static void DrawOverlayQueue(OverlayQueue &queue)", payload)
+        self.assertIn("DrawD3DAtlasQueue(queue);", payload)
+
+
 class OriginalBinaryRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -51,28 +79,7 @@ class OriginalBinaryRegressionTests(unittest.TestCase):
         self.assertEqual(self.layout.frame_site, 0x14019F465)
         self.assertEqual(self.layout.live_wrapper, 0x14005D610)
         self.assertEqual(self.layout.selector, 0x14004AC90)
-        self.assertEqual(self.layout.selection_commit, 0x1401BB250)
         self.assertEqual(len(self.layout.live_call_sites), 8)
-
-    def test_miller_regions_are_rediscovered(self):
-        self.assertEqual(self.layout.item_interaction, 0x140116080)
-        self.assertEqual(self.layout.item_interaction_call_sites, [
-            0x14012923A, 0x14012A1B4, 0x14012BC89,
-            0x14012FFCC, 0x140131514, 0x1401325CB,
-        ])
-        self.assertEqual(self.layout.begin_open_site, 0x140116FF5)
-        self.assertEqual(self.layout.begin_open_call_sites, [
-            0x140116F80, 0x140116FF5,
-        ])
-        self.assertEqual(self.layout.begin_queued_command, 0x14015D7D0)
-        self.assertEqual(self.layout.open_selected_items, 0x14005DC00)
-        self.assertEqual(self.layout.open_selected_navigate_call_sites, [
-            0x14005EE16, 0x14005F328,
-        ])
-        self.assertEqual(self.layout.close_all_tabs, 0x1400871F0)
-        self.assertEqual(self.layout.item_metadata, 0x1400668A0)
-        self.assertEqual(self.layout.inspector_sync, 0x14008AC20)
-        self.assertEqual(self.layout.navigate_panel, 0x14014E850)
 
     def test_structure_offsets_are_derived(self):
         self.assertEqual(self.layout.selection_state_display_offset, 0x98)
@@ -80,21 +87,8 @@ class OriginalBinaryRegressionTests(unittest.TestCase):
         self.assertEqual(self.layout.display_primary_offset, 0x20)
         self.assertEqual(self.layout.display_alternate_offset, 0xC8)
         self.assertEqual(self.layout.display_count_offset, 0x68)
-        self.assertEqual(self.layout.panel_inspector_offset, 0x6D8)
-        self.assertEqual(self.layout.panel_backing_offset, 0x90)
-        self.assertEqual(self.layout.panel_view_offset, 0x98)
-        self.assertEqual(self.layout.child_owner_offset, 0xC8)
-        self.assertEqual(self.layout.child_flag_offset, 0x502)
-        self.assertEqual(self.layout.inspector_layout_offset, 0x48)
-        self.assertEqual(self.layout.inspector_mode_offset, 0x13D0)
-        self.assertEqual(self.layout.inspector_current_item_offset, 0x13E8)
-        self.assertEqual(self.layout.inspector_backing_offset, 0x13F0)
-        self.assertEqual(self.layout.inspector_child_offset, 0x1480)
-        self.assertEqual(self.layout.view_settings_offset, 0x16C)
-        self.assertEqual(self.layout.item_flags_offset, 0x20)
-        self.assertEqual(self.layout.metadata_path_offset, 0x10)
-        self.assertEqual(self.layout.metadata_flags_offset, 0x30)
         self.assertEqual(self.layout.app_active_panel_offset, 0xB30)
+        self.assertEqual(self.layout.find_imgui_window, 0x1401CAC10)
 
     def test_binding_table_is_complete(self):
         values = self.layout.binding_values()
@@ -121,6 +115,99 @@ class OriginalBinaryRegressionTests(unittest.TestCase):
                 "<i", call, 1)[0]
             self.assertEqual(destination,
                              target.image_base + patcher.TAB_HOVER_HELPER_RVA)
+
+
+class UnicodePatchRegressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.original_path = INPUT_BINARIES / "FPilot-original.exe"
+        if not cls.original_path.exists():
+            raise unittest.SkipTest("FPilot-original.exe is not present")
+        cls.original = patcher.TargetImage(cls.original_path)
+        cls.layout = patcher.discover_unicode_layout(cls.original)
+
+    def test_unicode_hook_seams_are_complete(self):
+        self.assertEqual(self.layout.glyph_lookup, 0x14010AA50)
+        self.assertEqual(len(self.layout.glyph_lookup_call_sites), 5)
+        self.assertEqual(self.layout.measure_text, 0x1401B78F0)
+        self.assertEqual(len(self.layout.measure_text_call_sites), 38)
+        self.assertEqual(self.layout.render_text_call_sites, (0x1401D50B3,))
+        self.assertEqual(len(self.layout.font_create_atlas_call_sites), 3)
+        self.assertEqual(self.layout.font_rasterizer, 0x140215C70)
+        self.assertEqual(self.layout.input_conversion_call_site, 0x14020B59A)
+        self.assertEqual(self.layout.d3d_create_device_call_sites,
+                         (0x14004892B, 0x14004897A))
+        self.assertEqual(self.layout.d3d_render_frame, 0x140049350)
+        self.assertEqual(self.layout.d3d_render_frame_call_site, 0x1401EDB49)
+        self.assertEqual(self.layout.d3d_renderer_global, 0x1402474D8)
+
+    def test_unicode_ranges_cover_requested_scripts_and_preserve_icons(self):
+        self.assertEqual(len(patcher.UNICODE_INITIAL_RANGES), 17)
+        for codepoint in (0x0627, 0x4E2D, 0x6587, 0xAC00, 0xD55C):
+            self.assertTrue(any(low <= codepoint <= high
+                                for low, high in patcher.UNICODE_INITIAL_RANGES))
+        self.assertEqual(patcher.UNICODE_INITIAL_RANGES[13:],
+                         patcher.UNICODE_ORIGINAL_RANGES[13:])
+
+    def test_emitted_unicode_build_has_validated_hooks(self):
+        output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"
+        if not output_path.exists():
+            raise unittest.SkipTest("combined Unicode release has not been built")
+        output = output_path.read_bytes()
+        _, _, _, _, sections = patcher.pe_layout(output)
+        unicode_section = next((section for section in sections if section.name == ".fpu"), None)
+        self.assertIsNotNone(unicode_section)
+        expected_ranges = b"".join(struct.pack("<II", low, high)
+                                   for low, high in patcher.UNICODE_INITIAL_RANGES)
+        table_offset = patcher.rva_to_file(
+            sections, self.layout.range_table - self.original.image_base)
+        self.assertEqual(output[table_offset:table_offset + len(expected_ranges)], expected_ranges)
+        for rva, original in patcher.UNICODE_CARET_CLAMPS.items():
+            offset = patcher.rva_to_file(sections, rva)
+            self.assertEqual(output[offset:offset + len(original)], b"\x90" * len(original))
+        for site in (*self.layout.glyph_lookup_call_sites,
+                     *self.layout.measure_text_call_sites,
+                     *self.layout.render_text_call_sites,
+                     *self.layout.font_create_atlas_call_sites,
+                     *self.layout.d3d_create_device_call_sites,
+                     self.layout.input_conversion_call_site,
+                     self.layout.d3d_render_frame_call_site):
+            offset = patcher.rva_to_file(sections, site - self.original.image_base)
+            self.assertEqual(output[offset], 0xE8)
+            destination = site + 5 + struct.unpack_from("<i", output, offset + 1)[0]
+            self.assertTrue(
+                self.original.image_base + unicode_section.rva <= destination <
+                self.original.image_base + unicode_section.rva + unicode_section.vsize,
+                f"Unicode hook at 0x{site:x} targets 0x{destination:x}")
+
+    def test_emitted_unicode_manifest_fixes_the_d3d_atlas_renderer(self):
+        output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"
+        manifest_path = Path(str(output_path) + ".unicode.json")
+        if not manifest_path.exists():
+            raise unittest.SkipTest("combined Unicode manifest has not been built")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["unicode"]["renderer"], "d3d-atlas")
+        self.assertEqual(manifest["unicode"]["renderer_selection"], "fixed")
+        self.assertNotIn("renderer_modes", manifest["unicode"])
+        self.assertNotIn("renderer_selector", manifest["unicode"])
+
+    def test_all_release_manifest_has_every_requested_patch(self):
+        output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"
+        manifest_path = Path(str(output_path) + ".unicode.json")
+        if not output_path.exists() or not manifest_path.exists():
+            raise unittest.SkipTest("combined release has not been built")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["build_profile"], "all")
+        self.assertEqual(manifest["patches"], {
+            "open_file_location": True,
+            "tab_window_creation": True,
+            "cross_window_tab_merge": True,
+            "unicode_text": True,
+        })
+        output = output_path.read_bytes()
+        _, _, _, _, sections = patcher.pe_layout(output)
+        self.assertTrue({".fplt", ".fpu", ".fpt", ".fpd"}.issubset(
+            {section.name for section in sections}))
 
 
 class TabPatchRegressionTests(unittest.TestCase):
@@ -193,24 +280,13 @@ class SeparatedCombinedBuildTests(unittest.TestCase):
         _, _, _, _, cls.combined_sections = patcher.pe_layout(cls.combined_data)
         cls.layout = patcher.discover_layout(cls.original)
 
-    def test_every_miller_call_site_remains_native(self):
-        sites = patcher.miller_call_sites(self.layout)
-        self.assertEqual(len(sites), 52)
-        for site in sites:
-            offset = patcher.rva_to_file(
-                self.combined_sections, site - self.original.image_base)
-            self.assertEqual(self.combined_data[offset:offset + 5], self.original.read(site, 5),
-                             f"Miller call changed at 0x{site:x}")
-
     def test_report_names_only_the_requested_features(self):
         report = json.loads(self.report_path.read_text(encoding="utf-8"))
         self.assertEqual(report["patches"], {
             "open_file_location": True,
             "tab_window_creation": True,
             "cross_window_tab_merge": True,
-            "miller_navigation": False,
         })
-        self.assertEqual(report["miller_separation_guard"]["modified_call_sites"], 0)
 
 
 if __name__ == "__main__":

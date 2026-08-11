@@ -27,9 +27,10 @@ __pycache__/
 /patcher/*.png
 /patcher/layout.json
 
-# Keep only the named release artifact; ad-hoc builds remain local.
+# Keep the named release artifacts; ad-hoc builds remain local.
 /binaries/release/*.exe
 !/binaries/release/FPilot-open-location-tab-merge.exe
+!/binaries/release/FPilot-all-patches.exe
 
 # Ghidra per-user and transient state
 /ghidra/project/*.lock

@@ -36,6 +36,25 @@ python -m unittest -v .\test_locator.py
 The default build reads `binaries/input/FPilot-original.exe` and writes
 `binaries/release/FPilot-open-location-tab-merge.exe`.
 
+To build every maintained patch, use the combined profile:
+
+```powershell
+& .\patcher\build_patch.ps1 -All
+```
+
+This writes
+`binaries/release/FPilot-all-patches.exe` and its JSON manifest. It
+contains Open File Location, tab creation/tear-off, cross-window tab merge, and
+the fixed D3D-atlas Unicode renderer. No environment variable or runtime mode
+selection is required. The renderer uses DirectWrite shaping and font fallback,
+caches single-channel glyph masks, and composites them on File Pilot's D3D11
+context with the native premultiplied-alpha blend. Replayed label submissions
+are coalesced before `Present`, preventing dark selection contours and redundant
+edge overdraw.
+
+See [docs/filepilot-unicode-patch.md](docs/filepilot-unicode-patch.md) for the
+renderer design, patched regions, and current limits.
+
 ## Ghidra
 
 Open `ghidra/project/FilePilot.gpr` in Ghidra. See `ghidra/README.md` before
