@@ -36,8 +36,8 @@ BINDINGS_VERSION = 22
 BINDINGS_QWORDS = 41
 UNICODE_PAYLOAD_FIRST_RVA = 0x1000
 UNICODE_BINDINGS_MAGIC = 0x53474E4942555046
-UNICODE_BINDINGS_VERSION = 3
-UNICODE_BINDINGS_QWORDS = 18
+UNICODE_BINDINGS_VERSION = 5
+UNICODE_BINDINGS_QWORDS = 22
 UNICODE_SUPPORTED_SHA256 = {
     "08826147a90e7c6a1c4e80968aaa927b14cfbca7271c7d12db3af9f24c483646":
         "File Pilot 0.8.2 x64 Unicode profile",
@@ -54,6 +54,12 @@ UNICODE_D3D_CREATE_DEVICE_RVA = 0x2168E4
 UNICODE_D3D_RENDER_FRAME_RVA = 0x49350
 UNICODE_D3D_RENDER_FRAME_CALL_RVA = 0x1EDB49
 UNICODE_D3D_RENDERER_GLOBAL_RVA = 0x2474D8
+UNICODE_NATIVE_QUAD_EMITTER_RVA = 0x1B9B50
+UNICODE_NATIVE_QUAD_CALL_RVA = 0x1B8F9C
+UNICODE_NATIVE_COMMAND_ALLOCATOR_RVA = 0x1B99C0
+UNICODE_D3D_DRAW_BATCH_RVA = 0x4A690
+UNICODE_D3D_DRAW_BATCH_CALL_RVAS = (0x49B30, 0x49C37)
+UNICODE_NATIVE_RENDER_DATA_GLOBAL_RVA = 0x247298
 UNICODE_CARET_CLAMPS = {
     0x1D0DBA: bytes.fromhex("0F 47 D0"),
     0x1D11FD: bytes.fromhex("0F 47 D7"),
@@ -763,11 +769,17 @@ class UnicodeLayout:
     d3d_render_frame: int
     d3d_render_frame_call_site: int
     d3d_renderer_global: int
+    native_quad_emitter: int
+    native_quad_call_site: int
+    native_command_allocator: int
+    d3d_draw_batch: int
+    d3d_draw_batch_call_sites: tuple[int, ...]
+    native_render_data_global: int
 
     def report(self) -> dict:
         address = lambda value: f"0x{value:x}"
         return {
-            "profile": "fixed DirectWrite-shaped D3D11 glyph-mask atlas",
+            "profile": "DirectWrite-shaped native-inline D3D11 A/B renderers",
             "glyph_lookup": address(self.glyph_lookup),
             "glyph_lookup_call_sites": [address(value)
                                         for value in self.glyph_lookup_call_sites],
@@ -787,7 +799,14 @@ class UnicodeLayout:
                                               for value in self.d3d_create_device_call_sites],
             "d3d_render_frame_call_site": address(self.d3d_render_frame_call_site),
             "d3d_renderer_global": address(self.d3d_renderer_global),
-            "atlas_policy": "compact native ranges with visible-row shaping and mask caching",
+            "native_quad_emitter": address(self.native_quad_emitter),
+            "native_quad_call_site": address(self.native_quad_call_site),
+            "native_command_allocator": address(self.native_command_allocator),
+            "d3d_draw_batch": address(self.d3d_draw_batch),
+            "d3d_draw_batch_call_sites": [address(value)
+                                            for value in self.d3d_draw_batch_call_sites],
+            "native_render_data_global": address(self.native_render_data_global),
+            "atlas_policy": "compact native ranges with row and shared-glyph mask caches",
         }
 
 
@@ -848,11 +867,23 @@ def discover_unicode_layout(target: TargetImage) -> UnicodeLayout:
     d3d_render_call = base + UNICODE_D3D_RENDER_FRAME_CALL_RVA
     if target.decode_call(d3d_render_call) != d3d_render_frame:
         raise ValueError("Unicode renderer D3D pre-Present seam changed")
+    native_quad_emitter = base + UNICODE_NATIVE_QUAD_EMITTER_RVA
+    native_quad_call = base + UNICODE_NATIVE_QUAD_CALL_RVA
+    if target.decode_call(native_quad_call) != native_quad_emitter:
+        raise ValueError("Unicode native quad-emitter seam changed")
+    d3d_draw_batch = base + UNICODE_D3D_DRAW_BATCH_RVA
+    d3d_draw_batch_calls = tuple(base + rva for rva in UNICODE_D3D_DRAW_BATCH_CALL_RVAS)
+    for call in d3d_draw_batch_calls:
+        if target.decode_call(call) != d3d_draw_batch:
+            raise ValueError("Unicode native D3D draw-batch seam changed")
     return UnicodeLayout(
         glyph_lookup, glyph_calls, measure_text, measure_calls, render_text, render_calls,
         font_create_atlas, font_calls, font_rasterizer, utf16_to_utf8, input_call, range_table,
         d3d_create_device, d3d_create_calls, d3d_render_frame, d3d_render_call,
-        base + UNICODE_D3D_RENDERER_GLOBAL_RVA)
+        base + UNICODE_D3D_RENDERER_GLOBAL_RVA,
+        native_quad_emitter, native_quad_call,
+        base + UNICODE_NATIVE_COMMAND_ALLOCATOR_RVA, d3d_draw_batch,
+        d3d_draw_batch_calls, base + UNICODE_NATIVE_RENDER_DATA_GLOBAL_RVA)
 
 
 def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva: int,
@@ -863,7 +894,8 @@ def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva
                for name in ("UnicodeGlyphLookupHook", "UnicodeMeasureTextHook",
                             "UnicodeRenderTextHook", "UnicodeFontCreateAtlasHook",
                             "UnicodeUtf16ToUtf8Hook", "UnicodeD3D11CreateDeviceHook",
-                            "UnicodeD3DRenderFrameHook", "UnicodeDebug",
+                            "UnicodeD3DRenderFrameHook", "UnicodeNativeQuadHook",
+                            "UnicodeD3DDrawBatchHook", "UnicodeDebug",
                             "UnicodeExperiment", "Bindings")}
     image_size = u32(payload, optional + 56)
     mapped = bytearray(image_size - UNICODE_PAYLOAD_FIRST_RVA)
@@ -905,6 +937,8 @@ def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva
         layout.measure_text, layout.render_text, layout.font_create_atlas,
         layout.font_rasterizer, layout.utf16_to_utf8, layout.range_table,
         imports["D3D11CreateDevice"], layout.d3d_render_frame, layout.d3d_renderer_global,
+        layout.native_quad_emitter, layout.native_command_allocator, layout.d3d_draw_batch,
+        layout.native_render_data_global,
     ]
     if len(binding_values) != UNICODE_BINDINGS_QWORDS:
         raise AssertionError("Unicode binding table length changed")
@@ -953,7 +987,9 @@ def apply_unicode_patch(output: bytearray, target: TargetImage, sections: list[S
         "font atlas": payload_va + exports["UnicodeFontCreateAtlasHook"],
         "WM_CHAR UTF-16 conversion": payload_va + exports["UnicodeUtf16ToUtf8Hook"],
         "D3D11 device creation": payload_va + exports["UnicodeD3D11CreateDeviceHook"],
-        "D3D pre-Present overlay": payload_va + exports["UnicodeD3DRenderFrameHook"],
+        "D3D frame lifecycle": payload_va + exports["UnicodeD3DRenderFrameHook"],
+        "native quad emitter": payload_va + exports["UnicodeNativeQuadHook"],
+        "native D3D draw batch": payload_va + exports["UnicodeD3DDrawBatchHook"],
     }
     for site in layout.glyph_lookup_call_sites:
         patch_call(output, target, sections, site, layout.glyph_lookup,
@@ -974,8 +1010,14 @@ def apply_unicode_patch(output: bytearray, target: TargetImage, sections: list[S
         patch_call(output, target, sections, site, layout.d3d_create_device,
                    hooks["D3D11 device creation"], "Unicode D3D11 device creation")
     patch_call(output, target, sections, layout.d3d_render_frame_call_site,
-               layout.d3d_render_frame, hooks["D3D pre-Present overlay"],
-               "Unicode D3D pre-Present overlay")
+               layout.d3d_render_frame, hooks["D3D frame lifecycle"],
+               "Unicode D3D frame lifecycle")
+    patch_call(output, target, sections, layout.native_quad_call_site,
+               layout.native_quad_emitter, hooks["native quad emitter"],
+               "Unicode native quad emitter")
+    for site in layout.d3d_draw_batch_call_sites:
+        patch_call(output, target, sections, site, layout.d3d_draw_batch,
+                   hooks["native D3D draw batch"], "Unicode native D3D draw batch")
 
     for rva, expected in UNICODE_CARET_CLAMPS.items():
         patch_exact_bytes(output, sections, target.image_base, target.image_base + rva,
@@ -989,8 +1031,22 @@ def apply_unicode_patch(output: bytearray, target: TargetImage, sections: list[S
     report = layout.report()
     report["hooks"] = {name: f"0x{address:x}" for name, address in hooks.items()}
     report["caret_ascii_clamps_removed"] = len(UNICODE_CARET_CLAMPS)
-    report["renderer"] = "d3d-atlas"
-    report["renderer_selection"] = "fixed"
+    report["renderer"] = "native-inline-d3d-atlas"
+    report["renderer_selection"] = "environment"
+    report["renderer_selector"] = "FPILOT_UNICODE_NATIVE_MODE"
+    report["renderer_default"] = "row-texture"
+    report["renderer_modes"] = {
+        "row-texture": 1,
+        "shaped-glyph": 2,
+        "custom-command": 4,
+    }
+    report["transform_selection"] = "environment"
+    report["transform_selector"] = "FPILOT_UNICODE_TRANSFORM_MODE"
+    report["transform_default"] = "native-probe"
+    report["transform_modes"] = {
+        "legacy": 1,
+        "native-probe": 2,
+    }
     report["telemetry_rva"] = (
         f"0x{payload_va + exports['UnicodeExperiment'] - target.image_base:x}")
     return report

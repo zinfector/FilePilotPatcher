@@ -52,18 +52,34 @@ class UnicodeRendererSourceTests(unittest.TestCase):
             "blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;",
             payload)
 
-    def test_overlay_queue_coalesces_replayed_labels(self):
+    def test_native_inline_packets_preserve_command_instances(self):
         payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
-        self.assertIn("5, ExperimentInitialized", payload)
-        self.assertIn("UnicodeExperiment.overlayCoalesced++;", payload)
-        self.assertIn("queued.color[component] = candidate.color[component];", payload)
+        self.assertIn("7, ExperimentInitialized", payload)
+        self.assertIn("static bool EnqueueInlinePacket", payload)
+        self.assertIn("UnicodeD3DDrawBatchHook", payload)
+        self.assertNotIn("queued.color[component] = candidate.color[component];", payload)
 
-    def test_d3d_atlas_is_the_only_runtime_renderer(self):
+    def test_native_transform_probe_preserves_animation_geometry(self):
+        payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
+        self.assertIn("FPILOT_UNICODE_TRANSFORM_MODE", payload)
+        self.assertIn("NativeTransformProbe = 2", payload)
+        self.assertIn("UnicodeNativeQuadHook", payload)
+        self.assertIn("kNativeTransformProbeBasis = 4096", payload)
+        self.assertIn("ApplyPacketTransform", payload)
+        self.assertIn("CoalesceCapturedPacket", payload)
+        self.assertIn("NativeMarkerProbe", payload)
+
+    def test_native_renderer_ab_modes_are_explicit(self):
         payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
         self.assertNotIn("FPILOT_UNICODE_RENDERER", payload)
-        self.assertNotIn("EnsureExperimentMode", payload)
-        self.assertIn("static void DrawOverlayQueue(OverlayQueue &queue)", payload)
-        self.assertIn("DrawD3DAtlasQueue(queue);", payload)
+        self.assertIn("FPILOT_UNICODE_NATIVE_MODE", payload)
+        self.assertIn("NativeRendererRowTexture = 1", payload)
+        self.assertIn("NativeRendererShapedGlyphs = 2", payload)
+        self.assertIn("NativeRendererCustomCommand = 4", payload)
+        self.assertIn("DrawD3DShapedGlyphsInline", payload)
+        self.assertIn("SubmitCustomNativeCommand", payload)
+        self.assertIn("InlineScissor", payload)
+        self.assertNotIn("DrawOverlayQueue", payload)
 
 
 class OriginalBinaryRegressionTests(unittest.TestCase):
@@ -140,6 +156,13 @@ class UnicodePatchRegressionTests(unittest.TestCase):
         self.assertEqual(self.layout.d3d_render_frame, 0x140049350)
         self.assertEqual(self.layout.d3d_render_frame_call_site, 0x1401EDB49)
         self.assertEqual(self.layout.d3d_renderer_global, 0x1402474D8)
+        self.assertEqual(self.layout.native_quad_emitter, 0x1401B9B50)
+        self.assertEqual(self.layout.native_quad_call_site, 0x1401B8F9C)
+        self.assertEqual(self.layout.native_command_allocator, 0x1401B99C0)
+        self.assertEqual(self.layout.d3d_draw_batch, 0x14004A690)
+        self.assertEqual(self.layout.d3d_draw_batch_call_sites,
+                         (0x140049B30, 0x140049C37))
+        self.assertEqual(self.layout.native_render_data_global, 0x140247298)
 
     def test_unicode_ranges_cover_requested_scripts_and_preserve_icons(self):
         self.assertEqual(len(patcher.UNICODE_INITIAL_RANGES), 17)
@@ -170,8 +193,10 @@ class UnicodePatchRegressionTests(unittest.TestCase):
                      *self.layout.render_text_call_sites,
                      *self.layout.font_create_atlas_call_sites,
                      *self.layout.d3d_create_device_call_sites,
+                     *self.layout.d3d_draw_batch_call_sites,
                      self.layout.input_conversion_call_site,
-                     self.layout.d3d_render_frame_call_site):
+                     self.layout.d3d_render_frame_call_site,
+                     self.layout.native_quad_call_site):
             offset = patcher.rva_to_file(sections, site - self.original.image_base)
             self.assertEqual(output[offset], 0xE8)
             destination = site + 5 + struct.unpack_from("<i", output, offset + 1)[0]
@@ -180,16 +205,28 @@ class UnicodePatchRegressionTests(unittest.TestCase):
                 self.original.image_base + unicode_section.rva + unicode_section.vsize,
                 f"Unicode hook at 0x{site:x} targets 0x{destination:x}")
 
-    def test_emitted_unicode_manifest_fixes_the_d3d_atlas_renderer(self):
+    def test_emitted_unicode_manifest_describes_native_ab_renderers(self):
         output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"
         manifest_path = Path(str(output_path) + ".unicode.json")
         if not manifest_path.exists():
             raise unittest.SkipTest("combined Unicode manifest has not been built")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["unicode"]["renderer"], "d3d-atlas")
-        self.assertEqual(manifest["unicode"]["renderer_selection"], "fixed")
-        self.assertNotIn("renderer_modes", manifest["unicode"])
-        self.assertNotIn("renderer_selector", manifest["unicode"])
+        self.assertEqual(manifest["unicode"]["renderer"], "native-inline-d3d-atlas")
+        self.assertEqual(manifest["unicode"]["renderer_selection"], "environment")
+        self.assertEqual(manifest["unicode"]["renderer_selector"],
+                         "FPILOT_UNICODE_NATIVE_MODE")
+        self.assertEqual(manifest["unicode"]["renderer_modes"], {
+            "row-texture": 1,
+            "shaped-glyph": 2,
+            "custom-command": 4,
+        })
+        self.assertEqual(manifest["unicode"]["transform_selector"],
+                         "FPILOT_UNICODE_TRANSFORM_MODE")
+        self.assertEqual(manifest["unicode"]["transform_default"], "native-probe")
+        self.assertEqual(manifest["unicode"]["transform_modes"], {
+            "legacy": 1,
+            "native-probe": 2,
+        })
 
     def test_all_release_manifest_has_every_requested_patch(self):
         output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"
