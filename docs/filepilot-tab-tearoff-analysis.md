@@ -254,12 +254,12 @@ or a later `SetWindowPos` can supersede the process startup hint.
 
 Before changing bytes, trace one failed drag in this order:
 
-1. `0x14017912F` — verify release emits command `0x58`.
-2. `0x14016D366` and `0x14016D3AF` — verify the external-drop branch is reached.
-3. `0x140203C42` — verify `GetCursorPos` runs and inspect the returned point.
-4. `0x140203F5D` — inspect `STARTUPINFOW.dwFlags`, `dwX`, and `dwY` at launch.
-5. `0x1401DEDF0` in the child — inspect the actual X/Y given to `CreateWindowExW`.
-6. `0x140204DE0` in the child — check for a later geometry override.
+1. `0x14017912F` - verify release emits command `0x58`.
+2. `0x14016D366` and `0x14016D3AF` - verify the external-drop branch is reached.
+3. `0x140203C42` - verify `GetCursorPos` runs and inspect the returned point.
+4. `0x140203F5D` - inspect `STARTUPINFOW.dwFlags`, `dwX`, and `dwY` at launch.
+5. `0x1401DEDF0` in the child - inspect the actual X/Y given to `CreateWindowExW`.
+6. `0x140204DE0` in the child - check for a later geometry override.
 
 If step 1 fails, focus on `FUN_140179040` and its drag-state fields. If step 1
 succeeds but step 2 fails, focus on the drop classification in
@@ -276,13 +276,13 @@ procedure is useful only for tracing raw mouse input before it becomes command
 
 ## Supporting exports
 
-- `work/tabdrag-emitter-decompile.txt` — release/event producer
-- `work/tabdrag-core-disasm.txt` — command `0x58` handler and tear-off branch
-- `work/tabdrag-decompile-1.txt` — async job and process-launch decompilation
-- `work/tabdrag-decompile-2.txt` — panel serialization wrapper
-- `work/tabdrag-decompile-3.txt` — ordinary duplicate-to-window comparison
-- `work/tabdrag-api-xrefs.txt` — cursor/process API references
-- `work/tabdrag-geometry-xrefs.txt` — startup and repositioning API references
+- `work/tabdrag-emitter-decompile.txt` - release/event producer
+- `work/tabdrag-core-disasm.txt` - command `0x58` handler and tear-off branch
+- `work/tabdrag-decompile-1.txt` - async job and process-launch decompilation
+- `work/tabdrag-decompile-2.txt` - panel serialization wrapper
+- `work/tabdrag-decompile-3.txt` - ordinary duplicate-to-window comparison
+- `work/tabdrag-api-xrefs.txt` - cursor/process API references
+- `work/tabdrag-geometry-xrefs.txt` - startup and repositioning API references
 
 The original executable and Ghidra database were not modified. A separate
 patched executable was created as documented above.
