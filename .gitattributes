@@ -1,0 +1,13 @@
+* text=auto
+
+*.md text eol=lf
+*.json text eol=lf
+*.py text eol=lf
+*.java text eol=lf
+*.cpp text eol=crlf
+*.ps1 text eol=crlf
+
+# Complete analysis and regression data are versioned through Git LFS.
+*.exe filter=lfs diff=lfs merge=lfs -text
+*.gbf filter=lfs diff=lfs merge=lfs -text
+*.dat filter=lfs diff=lfs merge=lfs -text
