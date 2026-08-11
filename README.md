@@ -6,13 +6,13 @@ modifications.
 
 ## Repository layout
 
-- `patcher/` — maintained patcher source, payload, build wrapper, and tests.
-- `ghidra/project/` — the current Ghidra project and analysis database.
-- `ghidra/scripts/` — FilePilot-specific Ghidra automation.
-- `binaries/input/` — the unmodified File Pilot 0.8.2 patch input.
-- `binaries/regression/` — known builds used by regression tests.
-- `binaries/release/` — the current combined patched executable.
-- `docs/` — design notes and historical implementation documentation.
+- `patcher/` - maintained patcher source, payload, build wrapper, and tests.
+- `ghidra/project/` - the current Ghidra project and analysis database.
+- `ghidra/scripts/` - FilePilot-specific Ghidra automation.
+- `binaries/input/` - the unmodified File Pilot 0.8.2 patch input.
+- `binaries/regression/` - known builds used by regression tests.
+- `binaries/release/` - the current combined patched executable.
+- `docs/` - design notes and historical implementation documentation.
 
 Executable files and Ghidra database blobs are stored with Git LFS. After
 cloning, run:
