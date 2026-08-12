@@ -1,3 +1,5 @@
+# Unofficial Project
+> This is an independent, unofficial project and is **not affiliated with, endorsed by, or associated with the official File Pilot developers**. Please do not contact the official developers for support related to this project.
 # File Pilot reverse-engineering project
 
 This repository contains the Ghidra analysis, patcher, regression fixtures, and
@@ -44,9 +46,9 @@ To build every maintained patch, use the combined profile:
 
 This writes
 `binaries/release/FPilot-all-patches.exe` and its JSON manifest. It
-contains Open File Location, tab creation/tear-off, cross-window tab merge, and
-the fixed native-row Unicode renderer. DirectWrite shapes and rasterizes extended
-text into cached immutable R8 resources, then File Pilot emits them as ordinary
+contains Open File Location, tab creation/tear-off, cross-window tab merge, the
+fixed native-row Unicode renderer, and the native context-menu cache. DirectWrite
+shapes and rasterizes extended text into cached immutable R8 resources, then File Pilot emits them as ordinary
 native type-0 textured quads. The Unicode hook calls the verified native quad
 emitter directly, so there is no text-renderer bridge, carrier, marker, frame hook, draw-batch hook,
 or custom graphics pipeline. Stable cached commands preserve File Pilot's native
@@ -54,6 +56,16 @@ unchanged-frame short circuit when a folder is idle.
 
 See [docs/filepilot-unicode-patch.md](docs/filepilot-unicode-patch.md) for the
 renderer design, patched regions, and current limits.
+
+The menu cache retains a partitioned LRU of complete native Shell menu wrappers:
+64 selected-item contexts and four folder-background contexts. On a miss it
+builds the replacement while existing Shell interfaces remain alive, then
+defers any eviction until the new menu closes. Folder, selection, custom context
+entries, query flags, and modifier state form each key; clipboard sequence is
+included only for background menus, whose Paste state depends on it. This avoids repeating synchronous
+`IContextMenu::QueryContextMenu` enumeration for recent contexts and prevents
+Shell teardown from entering the right-click open path. See
+[docs/filepilot-context-menu-cache.md](docs/filepilot-context-menu-cache.md).
 
 ## Ghidra
 
