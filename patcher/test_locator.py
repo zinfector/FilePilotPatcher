@@ -42,42 +42,44 @@ class UnicodeRendererSourceTests(unittest.TestCase):
     def test_combined_profile_has_stable_name(self):
         self.assertEqual(patcher.build_profile_name(True, True), "all")
 
-    def test_d3d_atlas_uses_premultiplied_native_blending(self):
-        shader = (HERE / "unicode_mask.hlsl").read_text(encoding="utf-8")
+    def test_native_row_resource_is_an_immutable_r8_texture(self):
         payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
-        self.assertIn("return input.color * glyphMask.Sample", shader)
-        self.assertIn(
-            "blend.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;", payload)
-        self.assertIn(
-            "blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;",
-            payload)
+        self.assertIn("struct NativeTextureResource", payload)
+        self.assertIn("static_assert(sizeof(NativeTextureResource) == 0x28", payload)
+        self.assertIn("entry.resource.arrayCount = 1;", payload)
+        self.assertIn("entry.resource.bytesPerPixel = 1;", payload)
+        self.assertIn("entry.resource.immutable = 1;", payload)
+        self.assertIn("FindOrCreateNativeRow", payload)
 
-    def test_native_inline_packets_preserve_command_instances(self):
+    def test_render_hook_submits_the_cached_row_directly(self):
         payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
-        self.assertIn("7, ExperimentInitialized", payload)
-        self.assertIn("static bool EnqueueInlinePacket", payload)
-        self.assertIn("UnicodeD3DDrawBatchHook", payload)
-        self.assertNotIn("queued.color[component] = candidate.color[component];", payload)
+        self.assertIn("8, ExperimentInitialized", payload)
+        self.assertIn("SubmitNativeRow", payload)
+        self.assertIn("rowStyle + 0x4c", payload)
+        self.assertIn("rowStyle + 0x58", payload)
+        self.assertIn("Bindings.originalNativeQuadEmitter", payload)
+        self.assertNotIn("UnicodeNativeQuadHook", payload)
+        self.assertNotIn("bridgeText", payload)
 
-    def test_native_transform_probe_preserves_animation_geometry(self):
+    def test_renderer_has_no_carrier_marker_or_batch_hook(self):
         payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
-        self.assertNotIn("FPILOT_UNICODE_TRANSFORM_MODE", payload)
-        self.assertIn("kNativeTransformProbe = 2", payload)
-        self.assertIn("UnicodeNativeQuadHook", payload)
-        self.assertIn("kNativeTransformProbeBasis = 4096", payload)
-        self.assertIn("ApplyPacketTransform", payload)
-        self.assertIn("CoalesceCapturedPacket", payload)
+        self.assertNotIn("SubmitNativeTextCarrier", payload)
+        self.assertNotIn("WriteNativeMarker", payload)
+        self.assertNotIn("EnqueueInlinePacket", payload)
+        self.assertNotIn("ApplyPacketTransform", payload)
+        self.assertNotIn("UnicodeD3DDrawBatchHook", payload)
+        self.assertNotIn("UnicodeD3DRenderFrameHook", payload)
+        self.assertNotIn("UnicodeGlyphLookupHook", payload)
 
-    def test_shaped_glyph_renderer_is_the_only_production_mode(self):
+    def test_native_row_renderer_is_the_only_production_mode(self):
         payload = (HERE / "unicode_payload.cpp").read_text(encoding="utf-8")
         self.assertNotIn("FPILOT_UNICODE_RENDERER", payload)
         self.assertNotIn("FPILOT_UNICODE_NATIVE_MODE", payload)
-        self.assertNotIn("DrawD3DAtlasRowInline", payload)
-        self.assertNotIn("SubmitCustomNativeCommand", payload)
-        self.assertIn("kNativeRendererShapedGlyphs = 2", payload)
-        self.assertIn("DrawD3DShapedGlyphsInline", payload)
-        self.assertIn("InlineScissor", payload)
-        self.assertNotIn("DrawOverlayQueue", payload)
+        self.assertIn("kNativeRendererRowResource = 3", payload)
+        self.assertIn("kNativeTransformEmitter = 3", payload)
+        self.assertNotIn("ID3D11", payload)
+        self.assertNotIn("D3D11CreateDevice", payload)
+        self.assertNotIn("unicode_mask_shaders.h", payload)
 
 
 class OriginalBinaryRegressionTests(unittest.TestCase):
@@ -141,33 +143,22 @@ class UnicodePatchRegressionTests(unittest.TestCase):
         cls.layout = patcher.discover_unicode_layout(cls.original)
 
     def test_unicode_hook_seams_are_complete(self):
-        self.assertEqual(self.layout.glyph_lookup, 0x14010AA50)
-        self.assertEqual(len(self.layout.glyph_lookup_call_sites), 5)
         self.assertEqual(self.layout.measure_text, 0x1401B78F0)
         self.assertEqual(len(self.layout.measure_text_call_sites), 38)
         self.assertEqual(self.layout.render_text_call_sites, (0x1401D50B3,))
         self.assertEqual(len(self.layout.font_create_atlas_call_sites), 3)
         self.assertEqual(self.layout.font_rasterizer, 0x140215C70)
         self.assertEqual(self.layout.input_conversion_call_site, 0x14020B59A)
-        self.assertEqual(self.layout.d3d_create_device_call_sites,
-                         (0x14004892B, 0x14004897A))
-        self.assertEqual(self.layout.d3d_render_frame, 0x140049350)
-        self.assertEqual(self.layout.d3d_render_frame_call_site, 0x1401EDB49)
-        self.assertEqual(self.layout.d3d_renderer_global, 0x1402474D8)
         self.assertEqual(self.layout.native_quad_emitter, 0x1401B9B50)
         self.assertEqual(self.layout.native_quad_call_site, 0x1401B8F9C)
-        self.assertEqual(self.layout.d3d_draw_batch, 0x14004A690)
-        self.assertEqual(self.layout.d3d_draw_batch_call_sites,
-                         (0x140049B30, 0x140049C37))
-        self.assertEqual(self.layout.native_render_data_global, 0x140247298)
 
-    def test_unicode_ranges_cover_requested_scripts_and_preserve_icons(self):
-        self.assertEqual(len(patcher.UNICODE_INITIAL_RANGES), 17)
-        for codepoint in (0x0627, 0x4E2D, 0x6587, 0xAC00, 0xD55C):
-            self.assertTrue(any(low <= codepoint <= high
-                                for low, high in patcher.UNICODE_INITIAL_RANGES))
-        self.assertEqual(patcher.UNICODE_INITIAL_RANGES[13:],
-                         patcher.UNICODE_ORIGINAL_RANGES[13:])
+    def test_native_ranges_remain_compact(self):
+        self.assertEqual(len(patcher.UNICODE_ORIGINAL_RANGES), 17)
+        self.assertFalse(any(low <= 0x4E2D <= high
+                             for low, high in patcher.UNICODE_ORIGINAL_RANGES))
+        self.assertEqual(patcher.UNICODE_ORIGINAL_RANGES[-4:], (
+            (0xE000, 0xE096), (0xE400, 0xE400),
+            (0xE800, 0xE801), (0xEC00, 0xEC00)))
 
     def test_emitted_unicode_build_has_validated_hooks(self):
         output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"
@@ -178,22 +169,17 @@ class UnicodePatchRegressionTests(unittest.TestCase):
         unicode_section = next((section for section in sections if section.name == ".fpu"), None)
         self.assertIsNotNone(unicode_section)
         expected_ranges = b"".join(struct.pack("<II", low, high)
-                                   for low, high in patcher.UNICODE_INITIAL_RANGES)
+                                   for low, high in patcher.UNICODE_ORIGINAL_RANGES)
         table_offset = patcher.rva_to_file(
             sections, self.layout.range_table - self.original.image_base)
         self.assertEqual(output[table_offset:table_offset + len(expected_ranges)], expected_ranges)
         for rva, original in patcher.UNICODE_CARET_CLAMPS.items():
             offset = patcher.rva_to_file(sections, rva)
             self.assertEqual(output[offset:offset + len(original)], b"\x90" * len(original))
-        for site in (*self.layout.glyph_lookup_call_sites,
-                     *self.layout.measure_text_call_sites,
+        for site in (*self.layout.measure_text_call_sites,
                      *self.layout.render_text_call_sites,
                      *self.layout.font_create_atlas_call_sites,
-                     *self.layout.d3d_create_device_call_sites,
-                     *self.layout.d3d_draw_batch_call_sites,
-                     self.layout.input_conversion_call_site,
-                     self.layout.d3d_render_frame_call_site,
-                     self.layout.native_quad_call_site):
+                     self.layout.input_conversion_call_site):
             offset = patcher.rva_to_file(sections, site - self.original.image_base)
             self.assertEqual(output[offset], 0xE8)
             destination = site + 5 + struct.unpack_from("<i", output, offset + 1)[0]
@@ -201,17 +187,24 @@ class UnicodePatchRegressionTests(unittest.TestCase):
                 self.original.image_base + unicode_section.rva <= destination <
                 self.original.image_base + unicode_section.rva + unicode_section.vsize,
                 f"Unicode hook at 0x{site:x} targets 0x{destination:x}")
+        native_quad_offset = patcher.rva_to_file(
+            sections, self.layout.native_quad_call_site - self.original.image_base)
+        native_quad_destination = self.layout.native_quad_call_site + 5 + \
+            struct.unpack_from("<i", output, native_quad_offset + 1)[0]
+        self.assertEqual(native_quad_destination, self.layout.native_quad_emitter)
 
-    def test_emitted_unicode_manifest_fixes_the_shaped_glyph_renderer(self):
+    def test_emitted_unicode_manifest_fixes_the_native_row_renderer(self):
         output_path = RELEASE_BINARIES / "FPilot-all-patches.exe"
         manifest_path = Path(str(output_path) + ".unicode.json")
         if not manifest_path.exists():
             raise unittest.SkipTest("combined Unicode manifest has not been built")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["unicode"]["renderer"], "shaped-glyph")
+        self.assertEqual(manifest["unicode"]["renderer"], "native-row-resource")
         self.assertEqual(manifest["unicode"]["renderer_selection"], "fixed")
-        self.assertEqual(manifest["unicode"]["transform"], "native-probe")
+        self.assertEqual(manifest["unicode"]["transform"], "direct-native-emitter")
         self.assertEqual(manifest["unicode"]["transform_selection"], "fixed")
+        self.assertEqual(manifest["unicode"]["native_command_type"], 0)
+        self.assertFalse(manifest["unicode"]["frame_variant_metadata"])
         self.assertNotIn("renderer_selector", manifest["unicode"])
         self.assertNotIn("renderer_modes", manifest["unicode"])
         self.assertNotIn("transform_selector", manifest["unicode"])

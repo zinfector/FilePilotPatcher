@@ -191,24 +191,20 @@ To emit only the Open File Location integration, use:
 
 `-All` also compiles a second no-CRT payload into `.fpu`. The Unicode payload is
 intentionally restricted to the verified File Pilot 0.8.2 hash because its text,
-font, input, caret, command-list, and D3D batch seams use exact calling conventions
-and structure layouts. The build writes `<output>.unicode.json`, which records the
-fixed `shaped-glyph` renderer and telemetry RVA.
+font, input, caret, and native quad seams use exact calling conventions and
+structure layouts. The build writes `<output>.unicode.json`, which records the
+fixed `native-row-resource` renderer and telemetry RVA.
 
-The renderer packs DirectWrite glyph masks into a shared 2048x2048 R8 page and
-emits the shaped glyph quads where File Pilot placed an invisible native text
-carrier. File Pilot applies menu/window animation while emitting that carrier;
-the payload derives the affine transform from its output corners and applies it
-to the Unicode geometry.
+The renderer shapes extended text with DirectWrite and caches each row as an
+immutable native R8 texture descriptor. At File Pilot's verified pre-emission
+quad seam, the Unicode render hook calls the native emitter directly with that
+resource and its tight destination rectangle.
+The resulting command is an ordinary native type-0 textured quad using File
+Pilot's current color, clip, order, and menu/window transform.
 
-Drawing occurs inside File Pilot's command dispatch with its current render
-target, native scissor, and captured transform. The shader emits premultiplied
-RGBA and matches File Pilot's `ONE` / `INV_SRC_ALPHA` composition. Texture and
-shape assets remain cached; draw packets coalesce only after capture and only
-when their affine transforms also match. The payload snapshots and restores every
-D3D pipeline state that it changes. Production has no renderer or transform
-environment selector; the alternative experiments remain on the renderer
-development branch.
+There is no native-text bridge, invisible carrier, marker packet, frame hook, D3D draw-batch hook,
+custom shader, or renderer selector. Cached row descriptors produce stable
+commands, so File Pilot can use its existing unchanged-frame fast path.
 
 Design details, coverage, and limitations are in
 `..\docs\filepilot-unicode-patch.md`.

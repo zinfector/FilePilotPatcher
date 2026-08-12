@@ -45,13 +45,12 @@ To build every maintained patch, use the combined profile:
 This writes
 `binaries/release/FPilot-all-patches.exe` and its JSON manifest. It
 contains Open File Location, tab creation/tear-off, cross-window tab merge, and
-the fixed shaped-glyph Unicode renderer. DirectWrite provides shaping and font
-fallback, while a shared D3D11 glyph atlas draws at the corresponding position
-in File Pilot's own command stream with its active render target and scissor.
-An invisible native carrier captures File Pilot's affine menu/window animation,
-so Unicode labels participate in native transitions and remain behind foreground
-menus. There is no renderer or transform environment selector in the production
-build.
+the fixed native-row Unicode renderer. DirectWrite shapes and rasterizes extended
+text into cached immutable R8 resources, then File Pilot emits them as ordinary
+native type-0 textured quads. The Unicode hook calls the verified native quad
+emitter directly, so there is no text-renderer bridge, carrier, marker, frame hook, draw-batch hook,
+or custom graphics pipeline. Stable cached commands preserve File Pilot's native
+unchanged-frame short circuit when a folder is idle.
 
 See [docs/filepilot-unicode-patch.md](docs/filepilot-unicode-patch.md) for the
 renderer design, patched regions, and current limits.

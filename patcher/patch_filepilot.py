@@ -36,13 +36,12 @@ BINDINGS_VERSION = 22
 BINDINGS_QWORDS = 41
 UNICODE_PAYLOAD_FIRST_RVA = 0x1000
 UNICODE_BINDINGS_MAGIC = 0x53474E4942555046
-UNICODE_BINDINGS_VERSION = 6
-UNICODE_BINDINGS_QWORDS = 21
+UNICODE_BINDINGS_VERSION = 9
+UNICODE_BINDINGS_QWORDS = 13
 UNICODE_SUPPORTED_SHA256 = {
     "08826147a90e7c6a1c4e80968aaa927b14cfbca7271c7d12db3af9f24c483646":
         "File Pilot 0.8.2 x64 Unicode profile",
 }
-UNICODE_GLYPH_LOOKUP_RVA = 0x10AA50
 UNICODE_MEASURE_TEXT_RVA = 0x1B78F0
 UNICODE_RENDER_TEXT_RVA = 0x1B82F0
 UNICODE_FONT_CREATE_ATLAS_RVA = 0x216580
@@ -50,15 +49,8 @@ UNICODE_FONT_RASTERIZER_RVA = 0x215C70
 UNICODE_UTF16_TO_UTF8_RVA = 0x1DD750
 UNICODE_INPUT_CONVERSION_CALL_RVA = 0x20B59A
 UNICODE_RANGE_TABLE_RVA = 0x245DC0
-UNICODE_D3D_CREATE_DEVICE_RVA = 0x2168E4
-UNICODE_D3D_RENDER_FRAME_RVA = 0x49350
-UNICODE_D3D_RENDER_FRAME_CALL_RVA = 0x1EDB49
-UNICODE_D3D_RENDERER_GLOBAL_RVA = 0x2474D8
 UNICODE_NATIVE_QUAD_EMITTER_RVA = 0x1B9B50
 UNICODE_NATIVE_QUAD_CALL_RVA = 0x1B8F9C
-UNICODE_D3D_DRAW_BATCH_RVA = 0x4A690
-UNICODE_D3D_DRAW_BATCH_CALL_RVAS = (0x49B30, 0x49C37)
-UNICODE_NATIVE_RENDER_DATA_GLOBAL_RVA = 0x247298
 UNICODE_CARET_CLAMPS = {
     0x1D0DBA: bytes.fromhex("0F 47 D0"),
     0x1D11FD: bytes.fromhex("0F 47 D7"),
@@ -70,14 +62,6 @@ UNICODE_ORIGINAL_RANGES = (
     (0x1C80, 0x1C8F), (0x0300, 0x036F), (0x2000, 0x206F),
     (0x2190, 0x2193), (0xE000, 0xE096), (0xE400, 0xE400),
     (0xE800, 0xE801), (0xEC00, 0xEC00),
-)
-UNICODE_INITIAL_RANGES = (
-    (0x0020, 0x03FF), (0x0400, 0x052F), (0x1C80, 0x2DFF),
-    (0x0590, 0x08FF), (0x3000, 0x4DBF), (0x4E00, 0x65FF),
-    (0x6600, 0x7DFF), (0x7E00, 0x95FF), (0x9600, 0xA69F),
-    (0xAC00, 0xC1FF), (0xC200, 0xD7AF), (0xFB50, 0xFEFF),
-    (0x2190, 0x2193),
-    (0xE000, 0xE096), (0xE400, 0xE400), (0xE800, 0xE801), (0xEC00, 0xEC00),
 )
 TAB_SURFACE_RENDERER_RVA = 0x1464E0
 TAB_SURFACE_CALL_RVAS = (0x1180A9, 0x1187F5, 0x118904)
@@ -751,8 +735,6 @@ def build_payload_image(payload: bytes, target_base: int, section_rva: int,
 
 @dataclass(frozen=True)
 class UnicodeLayout:
-    glyph_lookup: int
-    glyph_lookup_call_sites: tuple[int, ...]
     measure_text: int
     measure_text_call_sites: tuple[int, ...]
     render_text: int
@@ -763,24 +745,13 @@ class UnicodeLayout:
     utf16_to_utf8: int
     input_conversion_call_site: int
     range_table: int
-    d3d_create_device: int
-    d3d_create_device_call_sites: tuple[int, ...]
-    d3d_render_frame: int
-    d3d_render_frame_call_site: int
-    d3d_renderer_global: int
     native_quad_emitter: int
     native_quad_call_site: int
-    d3d_draw_batch: int
-    d3d_draw_batch_call_sites: tuple[int, ...]
-    native_render_data_global: int
 
     def report(self) -> dict:
         address = lambda value: f"0x{value:x}"
         return {
-            "profile": "DirectWrite-shaped native-inline D3D11 glyph renderer",
-            "glyph_lookup": address(self.glyph_lookup),
-            "glyph_lookup_call_sites": [address(value)
-                                        for value in self.glyph_lookup_call_sites],
+            "profile": "DirectWrite-shaped native row-resource renderer",
             "measure_text": address(self.measure_text),
             "measure_text_call_sites": [address(value)
                                          for value in self.measure_text_call_sites],
@@ -793,17 +764,9 @@ class UnicodeLayout:
             "font_rasterizer": address(self.font_rasterizer),
             "input_conversion_call_site": address(self.input_conversion_call_site),
             "range_table": address(self.range_table),
-            "d3d_create_device_call_sites": [address(value)
-                                              for value in self.d3d_create_device_call_sites],
-            "d3d_render_frame_call_site": address(self.d3d_render_frame_call_site),
-            "d3d_renderer_global": address(self.d3d_renderer_global),
             "native_quad_emitter": address(self.native_quad_emitter),
-            "native_quad_call_site": address(self.native_quad_call_site),
-            "d3d_draw_batch": address(self.d3d_draw_batch),
-            "d3d_draw_batch_call_sites": [address(value)
-                                            for value in self.d3d_draw_batch_call_sites],
-            "native_render_data_global": address(self.native_render_data_global),
-            "atlas_policy": "compact native ranges with a shared shaped-glyph mask cache",
+            "native_quad_validation_call_site": address(self.native_quad_call_site),
+            "atlas_policy": "original compact ranges with immutable native R8 row resources",
         }
 
 
@@ -820,13 +783,11 @@ def discover_unicode_layout(target: TargetImage) -> UnicodeLayout:
             "Unicode patch has no verified profile for input SHA-256 " + target.digest)
     starts = target.instruction_starts()
     base = target.image_base
-    glyph_lookup = base + UNICODE_GLYPH_LOOKUP_RVA
     measure_text = base + UNICODE_MEASURE_TEXT_RVA
     render_text = base + UNICODE_RENDER_TEXT_RVA
     font_create_atlas = base + UNICODE_FONT_CREATE_ATLAS_RVA
     font_rasterizer = base + UNICODE_FONT_RASTERIZER_RVA
     utf16_to_utf8 = base + UNICODE_UTF16_TO_UTF8_RVA
-    glyph_calls = direct_call_sites(target, starts, glyph_lookup)
     measure_calls = direct_call_sites(target, starts, measure_text)
     render_calls = direct_call_sites(target, starts, render_text)
     font_calls = direct_call_sites(target, starts, font_create_atlas)
@@ -836,7 +797,6 @@ def discover_unicode_layout(target: TargetImage) -> UnicodeLayout:
     if len(wrapper_rasterizer_calls) != 1:
         raise ValueError("Unicode font wrapper no longer has one native rasterizer call")
     expected_counts = {
-        "glyph lookup": (len(glyph_calls), 5),
         "text measurement": (len(measure_calls), 38),
         "text renderer": (len(render_calls), 1),
         "font atlas": (len(font_calls), 3),
@@ -855,32 +815,14 @@ def discover_unicode_layout(target: TargetImage) -> UnicodeLayout:
     range_table = base + UNICODE_RANGE_TABLE_RVA
     if target.read(range_table, len(expected_ranges)) != expected_ranges:
         raise ValueError("Unicode glyph range table no longer matches the verified layout")
-    d3d_create_device = base + UNICODE_D3D_CREATE_DEVICE_RVA
-    d3d_create_calls = direct_call_sites(target, starts, d3d_create_device)
-    expected_d3d_calls = (base + 0x4892B, base + 0x4897A)
-    if d3d_create_calls != expected_d3d_calls:
-        raise ValueError("Unicode renderer expected the two verified D3D11CreateDevice calls")
-    d3d_render_frame = base + UNICODE_D3D_RENDER_FRAME_RVA
-    d3d_render_call = base + UNICODE_D3D_RENDER_FRAME_CALL_RVA
-    if target.decode_call(d3d_render_call) != d3d_render_frame:
-        raise ValueError("Unicode renderer D3D pre-Present seam changed")
     native_quad_emitter = base + UNICODE_NATIVE_QUAD_EMITTER_RVA
     native_quad_call = base + UNICODE_NATIVE_QUAD_CALL_RVA
     if target.decode_call(native_quad_call) != native_quad_emitter:
         raise ValueError("Unicode native quad-emitter seam changed")
-    d3d_draw_batch = base + UNICODE_D3D_DRAW_BATCH_RVA
-    d3d_draw_batch_calls = tuple(base + rva for rva in UNICODE_D3D_DRAW_BATCH_CALL_RVAS)
-    for call in d3d_draw_batch_calls:
-        if target.decode_call(call) != d3d_draw_batch:
-            raise ValueError("Unicode native D3D draw-batch seam changed")
     return UnicodeLayout(
-        glyph_lookup, glyph_calls, measure_text, measure_calls, render_text, render_calls,
+        measure_text, measure_calls, render_text, render_calls,
         font_create_atlas, font_calls, font_rasterizer, utf16_to_utf8, input_call, range_table,
-        d3d_create_device, d3d_create_calls, d3d_render_frame, d3d_render_call,
-        base + UNICODE_D3D_RENDERER_GLOBAL_RVA,
-        native_quad_emitter, native_quad_call,
-        d3d_draw_batch, d3d_draw_batch_calls,
-        base + UNICODE_NATIVE_RENDER_DATA_GLOBAL_RVA)
+        native_quad_emitter, native_quad_call)
 
 
 def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva: int,
@@ -888,11 +830,9 @@ def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva
     _, _, optional, _, sections = pe_layout(payload)
     payload_image_base = u64(payload, optional + 24)
     exports = {name: find_export(payload, optional, sections, name.encode("ascii"))
-               for name in ("UnicodeGlyphLookupHook", "UnicodeMeasureTextHook",
-                            "UnicodeRenderTextHook", "UnicodeFontCreateAtlasHook",
-                            "UnicodeUtf16ToUtf8Hook", "UnicodeD3D11CreateDeviceHook",
-                            "UnicodeD3DRenderFrameHook", "UnicodeNativeQuadHook",
-                            "UnicodeD3DDrawBatchHook", "UnicodeDebug",
+               for name in ("UnicodeMeasureTextHook", "UnicodeRenderTextHook",
+                            "UnicodeFontCreateAtlasHook",
+                            "UnicodeUtf16ToUtf8Hook", "UnicodeDebug",
                             "UnicodeExperiment", "Bindings")}
     image_size = u32(payload, optional + 56)
     mapped = bytearray(image_size - UNICODE_PAYLOAD_FIRST_RVA)
@@ -925,16 +865,14 @@ def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva
         cursor += block_size
 
     imports = target.resolve_import_iat((
-        "LoadLibraryW", "GetProcAddress", "GetFileAttributesW", "VirtualAlloc", "VirtualFree",
-        "D3D11CreateDevice"))
+        "LoadLibraryW", "GetProcAddress", "VirtualAlloc", "VirtualFree"))
     binding_values = [
         UNICODE_BINDINGS_MAGIC, UNICODE_BINDINGS_VERSION, UNICODE_BINDINGS_QWORDS * 8,
-        imports["LoadLibraryW"], imports["GetProcAddress"], imports["GetFileAttributesW"],
-        imports["VirtualAlloc"], imports["VirtualFree"], layout.glyph_lookup,
-        layout.measure_text, layout.render_text, layout.font_create_atlas,
-        layout.font_rasterizer, layout.utf16_to_utf8, layout.range_table,
-        imports["D3D11CreateDevice"], layout.d3d_render_frame, layout.d3d_renderer_global,
-        layout.native_quad_emitter, layout.d3d_draw_batch, layout.native_render_data_global,
+        imports["LoadLibraryW"], imports["GetProcAddress"],
+        imports["VirtualAlloc"], imports["VirtualFree"],
+        layout.measure_text, layout.render_text,
+        layout.font_create_atlas, layout.font_rasterizer, layout.utf16_to_utf8,
+        layout.native_quad_emitter,
     ]
     if len(binding_values) != UNICODE_BINDINGS_QWORDS:
         raise AssertionError("Unicode binding table length changed")
@@ -977,19 +915,11 @@ def patch_exact_bytes(data: bytearray, sections: list[SectionRecord], image_base
 def apply_unicode_patch(output: bytearray, target: TargetImage, sections: list[SectionRecord],
                         layout: UnicodeLayout, payload_va: int, exports: dict[str, int]) -> dict:
     hooks = {
-        "glyph lookup": payload_va + exports["UnicodeGlyphLookupHook"],
         "text measurement": payload_va + exports["UnicodeMeasureTextHook"],
         "text renderer": payload_va + exports["UnicodeRenderTextHook"],
         "font atlas": payload_va + exports["UnicodeFontCreateAtlasHook"],
         "WM_CHAR UTF-16 conversion": payload_va + exports["UnicodeUtf16ToUtf8Hook"],
-        "D3D11 device creation": payload_va + exports["UnicodeD3D11CreateDeviceHook"],
-        "D3D frame lifecycle": payload_va + exports["UnicodeD3DRenderFrameHook"],
-        "native quad emitter": payload_va + exports["UnicodeNativeQuadHook"],
-        "native D3D draw batch": payload_va + exports["UnicodeD3DDrawBatchHook"],
     }
-    for site in layout.glyph_lookup_call_sites:
-        patch_call(output, target, sections, site, layout.glyph_lookup,
-                   hooks["glyph lookup"], "Unicode glyph lookup")
     for site in layout.measure_text_call_sites:
         patch_call(output, target, sections, site, layout.measure_text,
                    hooks["text measurement"], "Unicode text measurement")
@@ -1002,35 +932,18 @@ def apply_unicode_patch(output: bytearray, target: TargetImage, sections: list[S
     patch_call(output, target, sections, layout.input_conversion_call_site,
                layout.utf16_to_utf8, hooks["WM_CHAR UTF-16 conversion"],
                "Unicode WM_CHAR conversion")
-    for site in layout.d3d_create_device_call_sites:
-        patch_call(output, target, sections, site, layout.d3d_create_device,
-                   hooks["D3D11 device creation"], "Unicode D3D11 device creation")
-    patch_call(output, target, sections, layout.d3d_render_frame_call_site,
-               layout.d3d_render_frame, hooks["D3D frame lifecycle"],
-               "Unicode D3D frame lifecycle")
-    patch_call(output, target, sections, layout.native_quad_call_site,
-               layout.native_quad_emitter, hooks["native quad emitter"],
-               "Unicode native quad emitter")
-    for site in layout.d3d_draw_batch_call_sites:
-        patch_call(output, target, sections, site, layout.d3d_draw_batch,
-                   hooks["native D3D draw batch"], "Unicode native D3D draw batch")
-
     for rva, expected in UNICODE_CARET_CLAMPS.items():
         patch_exact_bytes(output, sections, target.image_base, target.image_base + rva,
                           expected, b"\x90" * len(expected), "Unicode caret clamp")
-    old_ranges = b"".join(struct.pack("<II", low, high)
-                          for low, high in UNICODE_ORIGINAL_RANGES)
-    new_ranges = b"".join(struct.pack("<II", low, high)
-                          for low, high in UNICODE_INITIAL_RANGES)
-    patch_exact_bytes(output, sections, target.image_base, layout.range_table,
-                      old_ranges, new_ranges, "Unicode glyph range table")
     report = layout.report()
     report["hooks"] = {name: f"0x{address:x}" for name, address in hooks.items()}
     report["caret_ascii_clamps_removed"] = len(UNICODE_CARET_CLAMPS)
-    report["renderer"] = "shaped-glyph"
+    report["renderer"] = "native-row-resource"
     report["renderer_selection"] = "fixed"
-    report["transform"] = "native-probe"
+    report["transform"] = "direct-native-emitter"
     report["transform_selection"] = "fixed"
+    report["native_command_type"] = 0
+    report["frame_variant_metadata"] = False
     report["telemetry_rva"] = (
         f"0x{payload_va + exports['UnicodeExperiment'] - target.image_base:x}")
     return report
@@ -1210,7 +1123,7 @@ def main():
                         help="omit all tab patches and emit only Open File Location integration")
     parser.add_argument(
         "--all", action="store_true",
-        help="emit Open File Location, tab creation/merge, and the D3D-atlas Unicode renderer")
+        help="emit Open File Location, tab creation/merge, and the native-row Unicode renderer")
     parser.add_argument("--unicode-payload", type=Path,
                         help="compiled unicode_payload.dll used with --all")
     parser.add_argument("input", type=Path, help="unpatched File Pilot executable")
