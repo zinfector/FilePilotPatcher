@@ -24,5 +24,8 @@ PROFILES = {
         "drag_prologue_bytes": 14,
         "drag_owner_offset": 0x50,
         "drag_active_offset": 0x58,
+        # Sidebar path activation: (app, UTF-8 {pointer,length}, isDirectory).
+        "sidebar_open_rva": 0x1C870,
+        "sidebar_open_prologue_bytes": 18,
     },
 }

@@ -14,12 +14,25 @@ static std::wstring lower(std::wstring s) {
     if (!s.empty()) CharLowerBuffW(&s[0], (DWORD)s.size());
     return s;
 }
-bool extension(const std::wstring& name) {
+bool extension(std::wstring_view name) {
     auto p = name.find_last_of(L'.');
     if (p == std::wstring::npos) return false;
-    const auto ext = lower(name.substr(p));
-    const wchar_t* supported[] = {L".zip",L".rar",L".7z",L".tar",L".gz",L".gzip",L".bz2",L".xz",L".zst",L".cab",L".iso",L".wim",L".lzh",L".arj",L".cpio",L".tgz",L".tbz2",L".txz"};
-    for (auto s : supported) if (ext == s) return true;
+    const auto ext = name.substr(p);
+    static constexpr std::wstring_view supported[] = {L".zip",L".rar",L".7z",L".tar",L".gz",L".gzip",L".bz2",L".xz",L".zst",L".cab",L".iso",L".wim",L".lzh",L".arj",L".cpio",L".tgz",L".tbz2",L".txz"};
+    for (auto s : supported) {
+        if(ext.size()!=s.size())continue;
+        size_t i=0;for(;i<s.size();++i){auto c=ext[i];if(c>=L'A'&&c<=L'Z')c+=L'a'-L'A';if(c!=s[i])break;}
+        if(i==s.size())return true;
+    }
+    return false;
+}
+bool archivePath(std::wstring_view path,bool includeLeaf){
+    size_t start=0;
+    for(size_t i=0;i<=path.size();++i){
+        if(i!=path.size()&&path[i]!=L'\\'&&path[i]!=L'/')continue;
+        if((i!=path.size()||includeLeaf)&&extension(path.substr(start,i-start)))return true;
+        start=i+1;
+    }
     return false;
 }
 static bool normalize(std::wstring& s) {
@@ -115,6 +128,17 @@ public:
     HRESULT STDMETHODCALLTYPE PrepareOperation(Int32) noexcept override {return S_OK;}
     HRESULT STDMETHODCALLTYPE SetOperationResult(Int32 r) noexcept override {result=r;return S_OK;}
 };
+class OpenProgress final : public IArchiveOpenCallback {
+public:
+    REFS
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** p) noexcept override {
+        *p=nullptr;
+        if(id==IID_IUnknown || id==IID_IArchiveOpenCallback){*p=static_cast<IArchiveOpenCallback*>(this);AddRef();return S_OK;}
+        return E_NOINTERFACE;
+    }
+    HRESULT STDMETHODCALLTYPE SetTotal(const UInt64*,const UInt64*) noexcept override {return S_OK;}
+    HRESULT STDMETHODCALLTYPE SetCompleted(const UInt64*,const UInt64*) noexcept override {return S_OK;}
+};
 struct Archive::Impl {
     IInArchive* reader=nullptr;
     Input* input=nullptr;
@@ -141,7 +165,10 @@ Archive::Archive(const std::wstring& path):impl(new Impl){
         if(cls.vt==VT_BSTR && SysStringByteLen(cls.bstrVal)==sizeof(GUID))CreateObject((GUID*)cls.bstrVal,&IID_IInArchive,(void**)&candidate);
         PropVariantClear(&cls);if(!candidate)continue;
         impl->input->Seek(0,0,nullptr);UInt64 probe=1<<20;
-        if(candidate->Open(impl->input,&probe,nullptr)==S_OK)impl->reader=candidate;
+        // Some format probes (including Base64) unconditionally report progress.
+        auto progress=new OpenProgress;
+        HRESULT opened=candidate->Open(impl->input,&probe,progress);progress->Release();
+        if(opened==S_OK)impl->reader=candidate;
         else candidate->Release();
         if(impl->reader)break;
     }
@@ -217,7 +244,7 @@ static std::mutex archivesMutex;
 struct Cached {std::wstring path;FILETIME time;ULONGLONG size;std::shared_ptr<Archive> archive;};
 static std::vector<Cached> archives;
 bool resolve(const wchar_t* raw,Location& out){
-    if(!raw)return false;std::wstring path=raw;std::replace(path.begin(),path.end(),L'/',L'\\');
+    if(!raw || !archivePath(raw))return false;std::wstring path=raw;std::replace(path.begin(),path.end(),L'/',L'\\');
     while(path.size()>3 && path.back()==L'\\')path.pop_back();
     for(size_t end=0;end<=path.size();++end){
         if(end!=path.size() && path[end]!=L'\\')continue;
@@ -225,13 +252,25 @@ bool resolve(const wchar_t* raw,Location& out){
         WIN32_FILE_ATTRIBUTE_DATA attrs{};
         if(!GetFileAttributesExW(prefix.c_str(),GetFileExInfoStandard,&attrs) || (attrs.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY))continue;
         out.physical=prefix;out.inside=end==path.size()?L"":path.substr(end+1);
-        std::lock_guard<std::mutex> lock(archivesMutex);
+        std::unique_lock<std::mutex> lock(archivesMutex);
         auto key=lower(prefix);auto size=((ULONGLONG)attrs.nFileSizeHigh<<32)|attrs.nFileSizeLow;
         for(auto& c:archives)if(lower(c.path)==key && c.size==size && CompareFileTime(&c.time,&attrs.ftLastWriteTime)==0){out.archive=c.archive;break;}
-        if(!out.archive){out.archive=std::make_shared<Archive>(prefix);if(archives.size()==4)archives.erase(archives.begin());archives.push_back({prefix,attrs.ftLastWriteTime,size,out.archive});}
+        if(!out.archive){
+            // Codec I/O and indexing must not serialize unrelated archive lookups.
+            lock.unlock();auto opened=std::make_shared<Archive>(prefix);lock.lock();
+            for(auto& c:archives)if(lower(c.path)==key && c.size==size && CompareFileTime(&c.time,&attrs.ftLastWriteTime)==0){out.archive=c.archive;break;}
+            std::shared_ptr<Archive> retired;
+            if(!out.archive){
+                out.archive=opened;
+                if(archives.size()==4){retired=std::move(archives.front().archive);archives.erase(archives.begin());}
+                archives.push_back({prefix,attrs.ftLastWriteTime,size,out.archive});
+            }
+            lock.unlock(); // Release redundant/evicted readers outside the cache lock too.
+        }else lock.unlock();
         out.entry.directory=true;
         if(out.inside.empty())return true;
-        for(auto& e:out.archive->entries)if(lower(e.path)==lower(out.inside)){out.entry=e;return true;}
+        auto insideKey=lower(out.inside);
+        for(auto& e:out.archive->entries)if(lower(e.path)==insideKey){out.entry=e;return true;}
         throw std::runtime_error("Archive entry does not exist");
     }
     return false;

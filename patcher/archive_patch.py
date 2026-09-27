@@ -33,7 +33,8 @@ def apply(image: bytes, original_digest: str, engine: Path, bootstrap: Path):
               'panel_cursor_offset', 'panel_selection_count_offset', 'panel_selection_array_offset',
               'selection_stride', 'item_flags_offset', 'descriptor_path_offset', 'descriptor_length_offset',
               'clipboard_rva', 'clipboard_prologue_bytes', 'clipboard_list_offset',
-              'drag_rva', 'drag_prologue_bytes', 'drag_owner_offset', 'drag_active_offset')
+              'drag_rva', 'drag_prologue_bytes', 'drag_owner_offset', 'drag_active_offset',
+              'sidebar_open_rva', 'sidebar_open_prologue_bytes')
     values = (engine_rva, previous, imports['LoadLibraryW'], imports['GetProcAddress'],
               *(profile[name] for name in fields))
     struct.pack_into('<' + 'I' * len(values), data, exports['ArchiveBindings'], *values)
@@ -50,5 +51,6 @@ def apply(image: bytes, original_digest: str, engine: Path, bootstrap: Path):
         'native_open_rva':hex(profile['open_selection_rva']),
         'native_clipboard_rva':hex(profile['clipboard_rva']),
         'native_drag_rva':hex(profile['drag_rva']),
+        'native_sidebar_open_rva':hex(profile['sidebar_open_rva']),
         'external_launch':'read-only managed cache; Ctrl+Shift+K opens cache',
         'shell_transfer':'FILEGROUPDESCRIPTORW and indexed IStream; copy only'}

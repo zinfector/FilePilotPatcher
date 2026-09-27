@@ -10,4 +10,5 @@ struct ArchiveBinding {
     DWORD itemFlagsOffset, descriptorPathOffset, descriptorLengthOffset;
     DWORD clipboardRva, clipboardPrologueBytes, clipboardListOffset;
     DWORD dragRva, dragPrologueBytes, dragOwnerOffset, dragActiveOffset;
+    DWORD sidebarOpenRva, sidebarOpenPrologueBytes;
 };
