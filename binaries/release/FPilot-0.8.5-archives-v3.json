@@ -1,0 +1,200 @@
+{
+  "sha256": "ab5e7bbfa50872225f24856697ef7341a58e51a5e521435ba0dfeeb8ab3b2676",
+  "known_build": "File Pilot 0.8.5 x64",
+  "image_base": "0x140000000",
+  "startup_hook_site": "0x1401e15fb",
+  "original_initializer": "0x140186860",
+  "frame_hook_site": "0x1401a17f7",
+  "original_frame": "0x140167ed0",
+  "live_selection_wrapper": "0x14005daa0",
+  "live_selection_call_sites": [
+    "0x140017074",
+    "0x14004be37",
+    "0x14004c9ed",
+    "0x14004f34d",
+    "0x14004f77d",
+    "0x14004fe1f",
+    "0x140058f63",
+    "0x1400592e9"
+  ],
+  "selector": "0x14004ac40",
+  "selection_cancel": "0x140086460",
+  "toggle_cursor_selection": "0x14008a9c0",
+  "offsets": {
+    "selection_state_display": "0x98",
+    "display_mode": "0x10",
+    "display_primary": "0x20",
+    "display_alternate": "0xf8",
+    "display_alternate_indirect": true,
+    "display_count": "0x68",
+    "app_active_panel": "0xaf8"
+  },
+  "tab_support": {
+    "find_imgui_window": "0x1401cd210"
+  },
+  "iat": {
+    "GetCommandLineW": "0x140219460",
+    "CommandLineToArgvW": "0x140219568",
+    "LocalFree": "0x140219288",
+    "GetFileAttributesW": "0x1402193f0",
+    "PathRemoveFileSpecW": "0x1402195f8",
+    "PathFindFileNameW": "0x140219610",
+    "SHParseDisplayName": "0x1402195c8",
+    "WideCharToMultiByte": "0x1402192f8",
+    "GetCurrentThreadId": "0x1402191a0",
+    "LoadLibraryW": "0x140219258",
+    "GetProcAddress": "0x140219230",
+    "InvalidateRect": "0x1402197a0",
+    "PostMessageW": "0x140219808",
+    "CoCreateInstance": "0x1402198b0",
+    "CoTaskMemFree": "0x1402198a0",
+    "PropVariantClear": "0x1402198d8"
+  },
+  "build_profile": "all",
+  "patches": {
+    "open_file_location": true,
+    "tab_window_creation": true,
+    "cross_window_tab_merge": true,
+    "unicode_text": true,
+    "context_menu_cache": true,
+    "archives": true
+  },
+  "unicode": {
+    "profile": "DirectWrite-shaped native row-resource renderer",
+    "measure_text": "0x1401b9d10",
+    "measure_text_call_sites": [
+      "0x14000abaf",
+      "0x14000aec9",
+      "0x140042d1d",
+      "0x1400a586e",
+      "0x1400a5f0a",
+      "0x1400a6f95",
+      "0x1400af22f",
+      "0x1400af254",
+      "0x1400af66e",
+      "0x1400af693",
+      "0x14011db42",
+      "0x14011db68",
+      "0x14011e4e7",
+      "0x14011f6a8",
+      "0x1401203cc",
+      "0x14012c3cd",
+      "0x14012c4a6",
+      "0x14012cf02",
+      "0x14012d90d",
+      "0x14012e476",
+      "0x14012f1d1",
+      "0x14012f20f",
+      "0x140134c02",
+      "0x14013d43a",
+      "0x14013d45e",
+      "0x14013f484",
+      "0x14013f4b0",
+      "0x1401472e7",
+      "0x1401563c9",
+      "0x1401a2e5c",
+      "0x1401b1248",
+      "0x1401ccf5f",
+      "0x1401daf43",
+      "0x1401dc5c8",
+      "0x1401ddd61",
+      "0x1401de312",
+      "0x1401de615",
+      "0x1401de64c"
+    ],
+    "render_text": "0x1401ba6d0",
+    "render_text_call_sites": [
+      "0x1401d7743"
+    ],
+    "font_create_atlas": "0x140217e50",
+    "font_create_atlas_call_sites": [
+      "0x140201a5b",
+      "0x140201aca",
+      "0x140201cce"
+    ],
+    "font_rasterizer": "0x140217540",
+    "input_conversion_call_site": "0x14020ce53",
+    "range_table": "0x140247dc0",
+    "native_quad_emitter": "0x1401bbf30",
+    "native_quad_validation_call_site": "0x1401bb37c",
+    "atlas_policy": "original compact ranges with immutable native R8 row resources",
+    "hooks": {
+      "text measurement": "0x140294180",
+      "text renderer": "0x1402943b0",
+      "font atlas": "0x140293d70",
+      "WM_CHAR UTF-16 conversion": "0x140294710"
+    },
+    "caret_ascii_clamps_removed": 0,
+    "renderer": "native-row-resource",
+    "renderer_selection": "fixed",
+    "transform": "direct-native-emitter",
+    "transform_selection": "fixed",
+    "native_command_type": 0,
+    "frame_variant_metadata": false,
+    "telemetry_rva": "0x296070"
+  },
+  "context_menu": {
+    "profile": "File Pilot 0.8.5 x64 partitioned native context-menu cache profile",
+    "strategy": "64 selected-item entries plus four background entries, build-before-evict, post-close destruction",
+    "key": "folder, selection-list and context-list contents, flags, background clipboard sequence, modifiers",
+    "acquire": "0x140109720",
+    "acquire_call_sites": [
+      "0x140041d7f",
+      "0x14004201c"
+    ],
+    "release": "0x140112790",
+    "release_call_site": "0x140041408",
+    "hooks": {
+      "acquire": "0x1403f99c0",
+      "release": "0x1403f9ee0"
+    },
+    "telemetry_rva": "0x3fb040",
+    "failure_cleanup_preserved": "0x140109b9d"
+  },
+  "cross_window_preview": {
+    "native_tab_surface_renderer": "0x140148410",
+    "call_sites": [
+      "0x140119d69",
+      "0x14011a4b5",
+      "0x14011a5c4"
+    ],
+    "input_state_global": "0x140248f80",
+    "frame_generation_global": "0x140249268",
+    "native_hover_helper": "0x1401d9ef0",
+    "hover_call_sites": [
+      "0x140149a04",
+      "0x140149a44"
+    ]
+  },
+  "tab_tearoff": {
+    "profile": "File Pilot 0.8.5 x64",
+    "code_rva": "0x3fe000",
+    "state_rva": "0x3ff000",
+    "stubs": {
+      "activation": "0x3fe000",
+      "export_call": "0x3fe0fb",
+      "worker_placement": "0x3fe1ef",
+      "clipboard_publish": "0x3fe243",
+      "clipboard_consume": "0x3fe2c3",
+      "child_apply": "0x3fe39f",
+      "drag_image": "0x3fe489",
+      "drag_text": "0x3fe4d6"
+    },
+    "sha256": "28b01ae82339d10a5c4532452d4df165804a61078c7ea2311899e91a0335578a",
+    "cross_window_transfer_rva": "0x27b370",
+    "cross_window_preview_rva": "0x27b340"
+  },
+  "archives": {
+    "profile": "File Pilot 0.8.5 x64",
+    "engine_rva": "0x405000",
+    "startup_rva": "0x4013f0",
+    "storage": "memory-only",
+    "extraction_shortcut": "Ctrl+Shift+E",
+    "engine": "7-Zip 26.03",
+    "native_open_rva": "0x5e090",
+    "native_clipboard_rva": "0x113700",
+    "native_drag_rva": "0x1f0530",
+    "external_launch": "read-only managed cache; Ctrl+Shift+K opens cache",
+    "shell_transfer": "FILEGROUPDESCRIPTORW and indexed IStream; copy only"
+  }
+}

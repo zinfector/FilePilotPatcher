@@ -1,0 +1,22 @@
+Archive support includes 7-Zip 26.03, Copyright (C) Igor Pavlov.
+Source: https://github.com/ip7z/7zip/tree/26.03
+Pinned upstream commit: 0766b733fe3e06dd2a7f9a3cfbf2108ac73abd17
+7-Zip is licensed under GNU LGPL, with BSD-licensed portions and the
+unRAR restriction. Preserve upstream notices and provide corresponding
+source/license materials when distributing executables containing it.
+
+Build: .\build_patch.ps1 -All -Archives -OutputExe <output.exe>
+The resulting EXE embeds the runtime; DLLs are build artifacts only.
+Archives appear as folders. Ctrl+Shift+E extracts a chosen archive directly
+to a chosen directory without overwriting existing files.
+Browsing uses RAM (256 MiB per entry); extraction streams to destination.
+Copy and drag advertise Unicode virtual file descriptors with seekable IStreams.
+Transfers are copy-only; keep File Pilot running until the paste/drop completes.
+Shell streams use bounded RAM; large-entry seeks replay compressed input.
+Paths within a Shell transfer must fit FILEDESCRIPTORW (259 characters).
+External entry opening creates a read-only copy under
+%LOCALAPPDATA%\FilePilotArchiveLaunch. Copies remain until manually deleted;
+Ctrl+Shift+K opens this cache. Changes are not written back into archives.
+Only external opening creates cache files. Browsing and copy/drag never stage files.
+Encrypted archives, multipart volumes and nested archive traversal are not implemented.
+Port seams live in archive_profiles.py. The Win32 adapter is host-IAT-only.

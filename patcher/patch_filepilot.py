@@ -23,22 +23,29 @@ from capstone import CS_ARCH_X86, CS_MODE_64, Cs
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
 from tab_relative import SUPPORTED_SHA256 as TAB_SUPPORTED_SHA256, apply_tab_patch
+from native_profiles import SHA256_085, native_rva
 
 
 KNOWN_SHA256 = {
+    SHA256_085: "File Pilot 0.8.5 x64",
     "08826147a90e7c6a1c4e80968aaa927b14cfbca7271c7d12db3af9f24c483646":
         "File Pilot 0.8.2 x64",
 }
 PAYLOAD_IMAGE_BASE = 0x140270000
 PAYLOAD_FIRST_RVA = 0x1000
 BINDINGS_MAGIC = 0x53474E4942504C46
-BINDINGS_VERSION = 22
-BINDINGS_QWORDS = 41
+BINDINGS_VERSION = 23
+BINDINGS_QWORDS = 44
 UNICODE_PAYLOAD_FIRST_RVA = 0x1000
 UNICODE_BINDINGS_MAGIC = 0x53474E4942555046
 UNICODE_BINDINGS_VERSION = 9
 UNICODE_BINDINGS_QWORDS = 13
+MENU_PAYLOAD_FIRST_RVA = 0x1000
+MENU_BINDINGS_MAGIC = 0x53474E49424D5046
+MENU_BINDINGS_VERSION = 1
+MENU_BINDINGS_QWORDS = 8
 UNICODE_SUPPORTED_SHA256 = {
+    SHA256_085: "File Pilot 0.8.5 x64 Unicode profile",
     "08826147a90e7c6a1c4e80968aaa927b14cfbca7271c7d12db3af9f24c483646":
         "File Pilot 0.8.2 x64 Unicode profile",
 }
@@ -63,6 +70,15 @@ UNICODE_ORIGINAL_RANGES = (
     (0x2190, 0x2193), (0xE000, 0xE096), (0xE400, 0xE400),
     (0xE800, 0xE801), (0xEC00, 0xEC00),
 )
+MENU_SUPPORTED_SHA256 = {
+    SHA256_085: "File Pilot 0.8.5 x64 partitioned native context-menu cache profile",
+    "08826147a90e7c6a1c4e80968aaa927b14cfbca7271c7d12db3af9f24c483646":
+        "File Pilot 0.8.2 x64 partitioned native context-menu cache profile",
+}
+MENU_ACQUIRE_RVA = 0x107B90
+MENU_RELEASE_RVA = 0x110AF0
+MENU_ACQUIRE_CALL_RVAS = (0x41DCF, 0x4206C)
+MENU_RELEASE_CALL_RVA = 0x41458
 TAB_SURFACE_RENDERER_RVA = 0x1464E0
 TAB_SURFACE_CALL_RVAS = (0x1180A9, 0x1187F5, 0x118904)
 TAB_HOVER_HELPER_RVA = 0x1D7860
@@ -91,6 +107,18 @@ LIVE_WRAPPER_SIGNATURE = (
     "B9 ?? ?? ?? ?? 49 8B F8 BE ?? ?? ?? ?? 48 8B DA 4D 8B 71 ?? "
     "4D 85 F6 0F 44 F1 48 8B CD 49 03 F1",
     0,
+)
+
+FRAME_SIGNATURE_085 = (
+    "B8 04 00 00 00 48 8B CE 41 89 06 E8 ?? ?? ?? ?? "
+    "0F 10 86 ?? ?? ?? ?? 41 C7 06 08 00 00 00 48 8B FB "
+    "48 39 1D ?? ?? ?? ??", 11,
+)
+LIVE_WRAPPER_SIGNATURE_085 = (
+    "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 "
+    "48 81 EC ?? ?? ?? ?? 48 8B 82 ?? ?? ?? ?? 49 8B F8 48 8B DA "
+    "48 8B E9 4C 8B 70 ?? 4D 85 F6 74 ?? 0F 10 88 ?? ?? ?? ?? "
+    "48 8D 70 ?? EB ?? 48 8B B0 ?? ?? ?? ?? 0F 10 4E ??", 0,
 )
 
 PANEL_VIEWPORT_SIGNATURE = (
@@ -278,6 +306,13 @@ class TargetImage:
             raise ValueError("LIEF could not parse the target")
         if any(section.name == ".fplt" for section in self.sections):
             raise ValueError("target already contains a .fplt section")
+
+    def native_rva(self, rva: int) -> int:
+        return native_rva(self.digest, rva)
+
+    def caret_clamps(self) -> dict[int, bytes]:
+        # 0.8.5 natively decodes UTF-8 in both caret loops; the ASCII clamps are gone.
+        return {} if self.digest == SHA256_085 else UNICODE_CARET_CLAMPS
 
     def va_to_file(self, va: int) -> int:
         return rva_to_file(self.sections, va - self.image_base)
@@ -521,6 +556,7 @@ class TargetLayout:
     app_active_panel_offset: int
     find_imgui_window: int
     imports: dict[str, int]
+    display_alternate_indirect: bool = False
 
     def binding_values(self, include_tab: bool = True) -> list[int]:
         values = [BINDINGS_MAGIC, BINDINGS_VERSION, BINDINGS_QWORDS * 8]
@@ -532,14 +568,13 @@ class TargetLayout:
             self.display_primary_offset, self.display_alternate_offset,
             self.display_count_offset, self.app_active_panel_offset,
             self.find_imgui_window, int(include_tab),
-            self.image_base + 0x185550 if include_tab else 0,
-            self.image_base + 0x15F750 if include_tab else 0,
-            self.image_base + 0x1846C0 if include_tab else 0,
-            self.image_base + 0x1925B0 if include_tab else 0,
-            self.image_base + TAB_SURFACE_RENDERER_RVA if include_tab else 0,
-            self.image_base + INPUT_STATE_GLOBAL_RVA if include_tab else 0,
-            self.image_base + FRAME_GENERATION_GLOBAL_RVA if include_tab else 0,
-            self.image_base + TAB_HOVER_HELPER_RVA if include_tab else 0,
+            *(self.image_base + native_rva(self.digest, rva) if include_tab else 0
+              for rva in (0x185550, 0x15F750, 0x1846C0, 0x1925B0,
+                          TAB_SURFACE_RENDERER_RVA, INPUT_STATE_GLOBAL_RVA,
+                          FRAME_GENERATION_GLOBAL_RVA, TAB_HOVER_HELPER_RVA)),
+            int(self.display_alternate_indirect),
+            0xBD8 if self.digest == SHA256_085 else 0xC10,
+            0xE70 if self.digest == SHA256_085 else 0xEA8,
         ))
         if len(values) != BINDINGS_QWORDS:
             raise AssertionError(f"binding table has {len(values)} values")
@@ -566,6 +601,7 @@ class TargetLayout:
                 "display_mode": address(self.display_mode_offset),
                 "display_primary": address(self.display_primary_offset),
                 "display_alternate": address(self.display_alternate_offset),
+                "display_alternate_indirect": self.display_alternate_indirect,
                 "display_count": address(self.display_count_offset),
                 "app_active_panel": address(self.app_active_panel_offset),
             },
@@ -577,9 +613,12 @@ class TargetLayout:
 
 
 def discover_layout(target: TargetImage) -> TargetLayout:
+    indirect = target.digest == SHA256_085
     startup_site = target.locate_signature("startup hook", STARTUP_SIGNATURE)
-    frame_site = target.locate_signature("frame hook", FRAME_SIGNATURE)
-    live_wrapper = target.locate_signature("live-selection wrapper", LIVE_WRAPPER_SIGNATURE)
+    frame_site = target.locate_signature("frame hook",
+        FRAME_SIGNATURE_085 if indirect else FRAME_SIGNATURE)
+    live_wrapper = target.locate_signature("live-selection wrapper",
+        LIVE_WRAPPER_SIGNATURE_085 if indirect else LIVE_WRAPPER_SIGNATURE)
     original_initializer = target.decode_call(startup_site)
     original_frame = target.decode_call(frame_site)
     for label, address in (("initializer", original_initializer), ("frame", original_frame),
@@ -603,14 +642,20 @@ def discover_layout(target: TargetImage) -> TargetLayout:
         if instruction.mnemonic == "mov" and len(instruction.operands) == 2:
             destination = register_name(instruction, 0)
             memory = memory_base_and_disp(instruction, 1)
-            if destination == "r9" and memory and memory[0] == "rdx":
+            if destination == ("rax" if indirect else "r9") and memory and memory[0] == "rdx":
                 state_offsets.append(memory[1])
-            elif destination == "r14" and memory and memory[0] == "r9":
+            elif destination == "r14" and memory and memory[0] == ("rax" if indirect else "r9"):
                 mode_offsets.append(memory[1])
+            elif indirect and destination == "rsi" and memory and memory[0] == "rax":
+                alternate_offsets.append(memory[1])
             elif destination == "esi" and instruction.operands[1].type == X86_OP_IMM:
                 primary_offsets.append(instruction.operands[1].imm)
             elif destination == "ecx" and instruction.operands[1].type == X86_OP_IMM:
                 alternate_offsets.append(instruction.operands[1].imm)
+        if indirect and instruction.mnemonic == "lea" and register_name(instruction, 0) == "rsi":
+            memory = memory_base_and_disp(instruction, 1)
+            if memory and memory[0] == "rax":
+                primary_offsets.append(memory[1])
         if instruction.mnemonic == "movups" and len(instruction.operands) == 2:
             destination = register_name(instruction, 0)
             memory = memory_base_and_disp(instruction, 1)
@@ -664,7 +709,7 @@ def discover_layout(target: TargetImage) -> TargetLayout:
         support["toggle_cursor_selection"], selection_state_display_offset,
         display_mode_offset, display_primary_offset, display_alternate_offset,
         display_count_offset, support["app_active_panel_offset"],
-        support["find_imgui_window"], target.import_iat(),
+        support["find_imgui_window"], target.import_iat(), indirect,
     )
 
 
@@ -770,11 +815,61 @@ class UnicodeLayout:
         }
 
 
+@dataclass(frozen=True)
+class MenuLayout:
+    acquire: int
+    acquire_call_sites: tuple[int, ...]
+    release: int
+    release_call_site: int
+    profile: str = "File Pilot 0.8.2 x64 partitioned native context-menu cache profile"
+
+    def report(self) -> dict:
+        address = lambda value: f"0x{value:x}"
+        return {
+            "profile": self.profile,
+            "strategy": (
+                "64 selected-item entries plus four background entries, "
+                "build-before-evict, post-close destruction"),
+            "key": (
+                "folder, selection-list and context-list contents, flags, "
+                "background clipboard sequence, modifiers"),
+            "acquire": address(self.acquire),
+            "acquire_call_sites": [address(value) for value in self.acquire_call_sites],
+            "release": address(self.release),
+            "release_call_site": address(self.release_call_site),
+        }
+
+
 def direct_call_sites(target: TargetImage, instruction_starts: set[int], destination: int) -> tuple[int, ...]:
     return tuple(sorted(
         site for site in instruction_starts
         if target.read(site, 1) == b"\xE8" and target.decode_call(site) == destination
     ))
+
+
+def discover_menu_layout(target: TargetImage) -> MenuLayout:
+    if target.digest not in MENU_SUPPORTED_SHA256:
+        raise ValueError(
+            "context-menu cache has no verified profile for input SHA-256 " + target.digest)
+    base = target.image_base
+    acquire = base + target.native_rva(MENU_ACQUIRE_RVA)
+    release = base + target.native_rva(MENU_RELEASE_RVA)
+    expected_acquire_calls = tuple(base + target.native_rva(rva) for rva in MENU_ACQUIRE_CALL_RVAS)
+    expected_release_call = base + target.native_rva(MENU_RELEASE_CALL_RVA)
+    starts = target.instruction_starts()
+    acquire_calls = direct_call_sites(target, starts, acquire)
+    release_calls = direct_call_sites(target, starts, release)
+    if acquire_calls != expected_acquire_calls:
+        raise ValueError(
+            "context-menu acquire call sites changed: " +
+            ", ".join(f"0x{site:x}" for site in acquire_calls))
+    expected_release_calls = (expected_release_call, base + target.native_rva(0x108006))
+    if release_calls != expected_release_calls:
+        raise ValueError(
+            "context-menu release call sites changed: " +
+            ", ".join(f"0x{site:x}" for site in release_calls))
+    return MenuLayout(acquire, acquire_calls, release, expected_release_call,
+                      MENU_SUPPORTED_SHA256[target.digest])
 
 
 def discover_unicode_layout(target: TargetImage) -> UnicodeLayout:
@@ -783,11 +878,11 @@ def discover_unicode_layout(target: TargetImage) -> UnicodeLayout:
             "Unicode patch has no verified profile for input SHA-256 " + target.digest)
     starts = target.instruction_starts()
     base = target.image_base
-    measure_text = base + UNICODE_MEASURE_TEXT_RVA
-    render_text = base + UNICODE_RENDER_TEXT_RVA
-    font_create_atlas = base + UNICODE_FONT_CREATE_ATLAS_RVA
-    font_rasterizer = base + UNICODE_FONT_RASTERIZER_RVA
-    utf16_to_utf8 = base + UNICODE_UTF16_TO_UTF8_RVA
+    measure_text = base + target.native_rva(UNICODE_MEASURE_TEXT_RVA)
+    render_text = base + target.native_rva(UNICODE_RENDER_TEXT_RVA)
+    font_create_atlas = base + target.native_rva(UNICODE_FONT_CREATE_ATLAS_RVA)
+    font_rasterizer = base + target.native_rva(UNICODE_FONT_RASTERIZER_RVA)
+    utf16_to_utf8 = base + target.native_rva(UNICODE_UTF16_TO_UTF8_RVA)
     measure_calls = direct_call_sites(target, starts, measure_text)
     render_calls = direct_call_sites(target, starts, render_text)
     font_calls = direct_call_sites(target, starts, font_create_atlas)
@@ -804,19 +899,19 @@ def discover_unicode_layout(target: TargetImage) -> UnicodeLayout:
     for label, (actual, expected) in expected_counts.items():
         if actual != expected:
             raise ValueError(f"Unicode {label} expected {expected} direct calls, found {actual}")
-    input_call = base + UNICODE_INPUT_CONVERSION_CALL_RVA
+    input_call = base + target.native_rva(UNICODE_INPUT_CONVERSION_CALL_RVA)
     if target.decode_call(input_call) != utf16_to_utf8:
         raise ValueError("Unicode WM_CHAR conversion seam no longer calls the UTF-16 codec")
-    for rva, expected in UNICODE_CARET_CLAMPS.items():
+    for rva, expected in target.caret_clamps().items():
         if target.read(base + rva, len(expected)) != expected:
             raise ValueError(f"Unicode caret clamp changed at 0x{base + rva:x}")
     expected_ranges = b"".join(struct.pack("<II", low, high)
                                for low, high in UNICODE_ORIGINAL_RANGES)
-    range_table = base + UNICODE_RANGE_TABLE_RVA
+    range_table = base + target.native_rva(UNICODE_RANGE_TABLE_RVA)
     if target.read(range_table, len(expected_ranges)) != expected_ranges:
         raise ValueError("Unicode glyph range table no longer matches the verified layout")
-    native_quad_emitter = base + UNICODE_NATIVE_QUAD_EMITTER_RVA
-    native_quad_call = base + UNICODE_NATIVE_QUAD_CALL_RVA
+    native_quad_emitter = base + target.native_rva(UNICODE_NATIVE_QUAD_EMITTER_RVA)
+    native_quad_call = base + target.native_rva(UNICODE_NATIVE_QUAD_CALL_RVA)
     if target.decode_call(native_quad_call) != native_quad_emitter:
         raise ValueError("Unicode native quad-emitter seam changed")
     return UnicodeLayout(
@@ -885,6 +980,61 @@ def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva
     return mapped, exports
 
 
+def build_menu_payload_image(payload: bytes, target: TargetImage, section_rva: int,
+                             layout: MenuLayout):
+    _, _, optional, _, sections = pe_layout(payload)
+    payload_image_base = u64(payload, optional + 24)
+    exports = {name: find_export(payload, optional, sections, name.encode("ascii"))
+               for name in ("MenuAcquireHook", "MenuReleaseHook", "MenuExperiment", "Bindings")}
+    image_size = u32(payload, optional + 56)
+    mapped = bytearray(image_size - MENU_PAYLOAD_FIRST_RVA)
+    for section in sections:
+        if section.rva < MENU_PAYLOAD_FIRST_RVA or not section.raw_size:
+            continue
+        relative = section.rva - MENU_PAYLOAD_FIRST_RVA
+        mapped[relative:relative + section.raw_size] = \
+            payload[section.raw:section.raw + section.raw_size]
+
+    delta = (target.image_base + section_rva) - \
+        (payload_image_base + MENU_PAYLOAD_FIRST_RVA)
+    reloc_rva = u32(payload, optional + 112 + 5 * 8)
+    reloc_size = u32(payload, optional + 112 + 5 * 8 + 4)
+    if reloc_rva and reloc_size:
+        cursor = rva_to_file(sections, reloc_rva)
+        limit = cursor + reloc_size
+        while cursor + 8 <= limit:
+            page_rva, block_size = struct.unpack_from("<II", payload, cursor)
+            if not page_rva or block_size < 8 or cursor + block_size > limit:
+                break
+            for entry_off in range(cursor + 8, cursor + block_size, 2):
+                entry = u16(payload, entry_off)
+                kind, offset = entry >> 12, entry & 0xFFF
+                if kind == 0:
+                    continue
+                if kind != 10:
+                    raise ValueError(f"unsupported menu payload relocation type {kind}")
+                mapped_off = page_rva + offset - MENU_PAYLOAD_FIRST_RVA
+                struct.pack_into("<Q", mapped, mapped_off, u64(mapped, mapped_off) + delta)
+            cursor += block_size
+
+    imports = target.resolve_import_iat(("LoadLibraryW", "GetProcAddress", "GetKeyState"))
+    binding_values = [
+        MENU_BINDINGS_MAGIC, MENU_BINDINGS_VERSION, MENU_BINDINGS_QWORDS * 8,
+        imports["LoadLibraryW"], imports["GetProcAddress"], imports["GetKeyState"],
+        layout.acquire, layout.release,
+    ]
+    if len(binding_values) != MENU_BINDINGS_QWORDS:
+        raise AssertionError("menu binding table length changed")
+    binding_off = exports["Bindings"] - MENU_PAYLOAD_FIRST_RVA
+    existing = struct.unpack_from("<QQQ", mapped, binding_off)
+    expected = (MENU_BINDINGS_MAGIC, MENU_BINDINGS_VERSION, MENU_BINDINGS_QWORDS * 8)
+    if existing != expected:
+        raise ValueError(f"menu payload binding header mismatch: {existing!r}")
+    struct.pack_into("<" + "Q" * MENU_BINDINGS_QWORDS,
+                     mapped, binding_off, *binding_values)
+    return mapped, exports
+
+
 def patch_call(data: bytearray, target: TargetImage, sections: list[SectionRecord],
                site_va: int, expected_target: int, replacement_target: int, label: str):
     site_file = rva_to_file(sections, site_va - target.image_base)
@@ -932,12 +1082,12 @@ def apply_unicode_patch(output: bytearray, target: TargetImage, sections: list[S
     patch_call(output, target, sections, layout.input_conversion_call_site,
                layout.utf16_to_utf8, hooks["WM_CHAR UTF-16 conversion"],
                "Unicode WM_CHAR conversion")
-    for rva, expected in UNICODE_CARET_CLAMPS.items():
+    for rva, expected in target.caret_clamps().items():
         patch_exact_bytes(output, sections, target.image_base, target.image_base + rva,
                           expected, b"\x90" * len(expected), "Unicode caret clamp")
     report = layout.report()
     report["hooks"] = {name: f"0x{address:x}" for name, address in hooks.items()}
-    report["caret_ascii_clamps_removed"] = len(UNICODE_CARET_CLAMPS)
+    report["caret_ascii_clamps_removed"] = len(target.caret_clamps())
     report["renderer"] = "native-row-resource"
     report["renderer_selection"] = "fixed"
     report["transform"] = "direct-native-emitter"
@@ -946,6 +1096,26 @@ def apply_unicode_patch(output: bytearray, target: TargetImage, sections: list[S
     report["frame_variant_metadata"] = False
     report["telemetry_rva"] = (
         f"0x{payload_va + exports['UnicodeExperiment'] - target.image_base:x}")
+    return report
+
+
+def apply_menu_patch(output: bytearray, target: TargetImage, sections: list[SectionRecord],
+                     layout: MenuLayout, payload_va: int, exports: dict[str, int]) -> dict:
+    acquire_hook = payload_va + exports["MenuAcquireHook"]
+    release_hook = payload_va + exports["MenuReleaseHook"]
+    for site in layout.acquire_call_sites:
+        patch_call(output, target, sections, site, layout.acquire,
+                   acquire_hook, "context-menu acquire")
+    patch_call(output, target, sections, layout.release_call_site, layout.release,
+               release_hook, "context-menu release")
+    report = layout.report()
+    report["hooks"] = {
+        "acquire": f"0x{acquire_hook:x}",
+        "release": f"0x{release_hook:x}",
+    }
+    report["telemetry_rva"] = (
+        f"0x{payload_va + exports['MenuExperiment'] - target.image_base:x}")
+    report["failure_cleanup_preserved"] = f"0x{target.image_base + target.native_rva(0x108006):x}"
     return report
 
 
@@ -966,7 +1136,9 @@ def build_profile_name(include_tab: bool, include_unicode: bool) -> str:
 
 def patch(target_path: Path, payload_path: Path, output_path: Path,
           layout_path: Path | None = None, include_tab: bool = True,
-          include_unicode: bool = False, unicode_payload_path: Path | None = None):
+          include_unicode: bool = False, unicode_payload_path: Path | None = None,
+          include_menu: bool = False, menu_payload_path: Path | None = None,
+          include_archives: bool = False):
     target = TargetImage(target_path)
     if include_tab and target.digest not in TAB_SUPPORTED_SHA256:
         raise ValueError(
@@ -984,7 +1156,12 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
         report["patches"]["unicode_text"] = True
         if unicode_payload_path is None:
             raise ValueError("Unicode patch requires --unicode-payload")
+    if include_menu:
+        report["patches"]["context_menu_cache"] = True
+        if menu_payload_path is None:
+            raise ValueError("context-menu cache requires --menu-payload")
     unicode_layout = discover_unicode_layout(target) if include_unicode else None
+    menu_layout = discover_menu_layout(target) if include_menu else None
 
     section_rva = choose_section_rva(target)
     mapped, exports = build_payload_image(payload_path.read_bytes(), target.image_base,
@@ -1013,6 +1190,23 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
             raise ValueError(
                 f"LIEF assigned unexpected Unicode payload RVA 0x{unicode_added.virtual_address:x}; "
                 f"expected 0x{unicode_section_rva:x}")
+    menu_section_rva = 0
+    menu_exports: dict[str, int] = {}
+    if menu_layout is not None and menu_payload_path is not None:
+        previous_end = unicode_section_rva + len(unicode_mapped) \
+            if unicode_layout is not None else section_rva + len(mapped)
+        menu_section_rva = align(previous_end, target.section_alignment)
+        menu_mapped, menu_exports = build_menu_payload_image(
+            menu_payload_path.read_bytes(), target, menu_section_rva, menu_layout)
+        menu_section = lief.PE.Section(".fpm")
+        menu_section.content = list(menu_mapped)
+        menu_section.virtual_address = menu_section_rva
+        menu_section.characteristics = 0xE0000060
+        menu_added = binary.add_section(menu_section)
+        if menu_added.virtual_address != menu_section_rva:
+            raise ValueError(
+                f"LIEF assigned unexpected menu payload RVA 0x{menu_added.virtual_address:x}; "
+                f"expected 0x{menu_section_rva:x}")
     # LIEF writes to a private sibling first. A failed tab validation therefore
     # cannot leave a misleading Open-Location-only executable at the requested
     # combined output path.
@@ -1053,30 +1247,41 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
         unicode_payload_va = target.image_base + unicode_section_rva - UNICODE_PAYLOAD_FIRST_RVA
         report["unicode"] = apply_unicode_patch(
             output, target, sections, unicode_layout, unicode_payload_va, unicode_exports)
+    if menu_layout is not None:
+        menu_payload_va = target.image_base + menu_section_rva - MENU_PAYLOAD_FIRST_RVA
+        report["context_menu"] = apply_menu_patch(
+            output, target, sections, menu_layout, menu_payload_va, menu_exports)
     if include_tab:
-        original_tab_surface = target.image_base + TAB_SURFACE_RENDERER_RVA
+        original_tab_surface = target.image_base + target.native_rva(TAB_SURFACE_RENDERER_RVA)
         for call_rva in TAB_SURFACE_CALL_RVAS:
-            patch_call(output, target, sections, target.image_base + call_rva,
+            patch_call(output, target, sections, target.image_base + target.native_rva(call_rva),
                        original_tab_surface, remote_tab_surface_hook_va,
                        "cross-window native tab marker")
-        original_tab_hover = target.image_base + TAB_HOVER_HELPER_RVA
+        original_tab_hover = target.image_base + target.native_rva(TAB_HOVER_HELPER_RVA)
         for call_rva in TAB_HOVER_CALL_RVAS:
-            patch_call(output, target, sections, target.image_base + call_rva,
+            patch_call(output, target, sections, target.image_base + target.native_rva(call_rva),
                        original_tab_hover, remote_tab_hover_hook_va,
                        "cross-window native tab hover")
         report["cross_window_preview"] = {
             "native_tab_surface_renderer": f"0x{original_tab_surface:x}",
-            "call_sites": [f"0x{target.image_base + rva:x}" for rva in TAB_SURFACE_CALL_RVAS],
-            "input_state_global": f"0x{target.image_base + INPUT_STATE_GLOBAL_RVA:x}",
+            "call_sites": [f"0x{target.image_base + target.native_rva(rva):x}" for rva in TAB_SURFACE_CALL_RVAS],
+            "input_state_global": f"0x{target.image_base + target.native_rva(INPUT_STATE_GLOBAL_RVA):x}",
             "frame_generation_global":
-                f"0x{target.image_base + FRAME_GENERATION_GLOBAL_RVA:x}",
+                f"0x{target.image_base + target.native_rva(FRAME_GENERATION_GLOBAL_RVA):x}",
             "native_hover_helper": f"0x{original_tab_hover:x}",
             "hover_call_sites": [
-                f"0x{target.image_base + rva:x}" for rva in TAB_HOVER_CALL_RVAS],
+                f"0x{target.image_base + target.native_rva(rva):x}" for rva in TAB_HOVER_CALL_RVAS],
         }
         report["tab_tearoff"] = apply_tab_patch(
             output, target.digest, cross_window_transfer_rva,
             cross_window_preview_rva)
+    if include_archives:
+        from archive_patch import apply as apply_archives
+        patcher_dir = Path(__file__).resolve().parent
+        output, report["archives"] = apply_archives(
+            bytes(output), target.digest, patcher_dir / "archive_payload.dll",
+            patcher_dir / "archive_bootstrap.dll")
+        report["patches"]["archives"] = True
     if layout_path:
         layout_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
@@ -1086,7 +1291,7 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
 
 
 def analyze(target_path: Path, layout_path: Path | None = None, include_tab: bool = True,
-            include_unicode: bool = False):
+            include_unicode: bool = False, include_menu: bool = False):
     target = TargetImage(target_path)
     if include_tab and target.digest not in TAB_SUPPORTED_SHA256:
         raise ValueError(
@@ -1102,6 +1307,9 @@ def analyze(target_path: Path, layout_path: Path | None = None, include_tab: boo
     if include_unicode:
         report["patches"]["unicode_text"] = True
         report["unicode"] = discover_unicode_layout(target).report()
+    if include_menu:
+        report["patches"]["context_menu_cache"] = True
+        report["context_menu"] = discover_menu_layout(target).report()
     if include_tab:
         report["tab_tearoff"] = {
             "profile": TAB_SUPPORTED_SHA256[target.digest],
@@ -1123,9 +1331,13 @@ def main():
                         help="omit all tab patches and emit only Open File Location integration")
     parser.add_argument(
         "--all", action="store_true",
-        help="emit Open File Location, tab creation/merge, and the native-row Unicode renderer")
+        help="emit Open File Location, tabs, Unicode renderer, and native menu cache")
     parser.add_argument("--unicode-payload", type=Path,
                         help="compiled unicode_payload.dll used with --all")
+    parser.add_argument("--menu-payload", type=Path,
+                        help="compiled menu_payload.dll used with --all")
+    parser.add_argument("--archives", action="store_true",
+                        help="embed archive browsing and direct extraction (Ctrl+Shift+E)")
     parser.add_argument("input", type=Path, help="unpatched File Pilot executable")
     parser.add_argument("payload", type=Path, nargs="?", help="compiled payload DLL")
     parser.add_argument("output", type=Path, nargs="?", help="patched standalone executable")
@@ -1133,17 +1345,22 @@ def main():
     if args.all and args.open_location_only:
         parser.error("--all cannot be combined with --open-location-only")
     include_unicode = args.all
+    include_menu = args.all
     if args.analyze:
         if args.payload or args.output:
             parser.error("--analyze accepts only the input executable")
-        analyze(args.input, args.layout_json, not args.open_location_only, include_unicode)
+        analyze(args.input, args.layout_json, not args.open_location_only,
+                include_unicode, include_menu)
         return
     if not args.payload or not args.output:
         parser.error("patch mode requires input, payload, and output paths")
     if include_unicode and not args.unicode_payload:
         parser.error("--all requires --unicode-payload")
+    if include_menu and not args.menu_payload:
+        parser.error("--all requires --menu-payload")
     patch(args.input, args.payload, args.output, args.layout_json,
-          not args.open_location_only, include_unicode, args.unicode_payload)
+          not args.open_location_only, include_unicode, args.unicode_payload,
+          include_menu, args.menu_payload, args.archives)
 
 
 if __name__ == "__main__":

@@ -1,18 +1,20 @@
-"""Fail-closed File Pilot 0.8.2 tab tear-off patch emitter.
+"""Fail-closed File Pilot 0.8.2/0.8.5 tab tear-off patch emitter.
 
 The Open File Location payload is discovered structurally by
 ``patch_filepilot.py``.  The tab tear-off hooks depend on register and stack
-layouts at eight native seams, so this module deliberately accepts only the
-exact build whose layouts were verified in Ghidra and at runtime.
+layouts at eight native seams, so this module accepts only explicit input
+hashes. The 0.8.5 profile was ported by static comparison of the Ghidra databases.
 """
 from __future__ import annotations
 
 import hashlib
 import struct
 from dataclasses import dataclass
+from native_profiles import SHA256_085, RVA_085, TAB_HOOK_BYTES_085, native_rva
 
 
 SUPPORTED_SHA256 = {
+    SHA256_085: "File Pilot 0.8.5 x64",
     "08826147a90e7c6a1c4e80968aaa927b14cfbca7271c7d12db3af9f24c483646":
         "File Pilot 0.8.2 x64",
 }
@@ -85,9 +87,11 @@ def _assert_bytes(data: bytearray, sections: list[_Section], rva: int,
 
 
 class _Emitter:
-    def __init__(self, base_rva: int):
+    def __init__(self, base_rva: int, digest: str = ""):
         self.base_rva = base_rva
         self.code = bytearray()
+        self.native_addresses = RVA_085 if digest == SHA256_085 else {}
+        self.is_085 = digest == SHA256_085
 
     @property
     def rva(self) -> int:
@@ -95,7 +99,18 @@ class _Emitter:
 
     def emit(self, value: str | bytes | bytearray):
         if isinstance(value, str):
-            self.code.extend(bytes.fromhex(value))
+            encoded = bytes.fromhex(value)
+            if self.is_085:
+                # App drag fields moved -0x38; native window drag helpers moved +8.
+                for before, after in (
+                    ("49 89 87 A0 0E 00 00", "49 89 87 68 0E 00 00"),
+                    ("41 03 8F A0 0E 00 00", "41 03 8F 68 0E 00 00"),
+                    ("48 8B 83 40 09 00 00", "48 8B 83 48 09 00 00"),
+                    ("8B 86 7C 09 00 00", "8B 86 84 09 00 00"),
+                    ("4C 89 BE 90 0A 00 00", "4C 89 BE 98 0A 00 00"),
+                ):
+                    encoded = encoded.replace(bytes.fromhex(before), bytes.fromhex(after))
+            self.code.extend(encoded)
         else:
             self.code.extend(value)
 
@@ -105,16 +120,19 @@ class _Emitter:
         self.code.extend(struct.pack("<i", value))
 
     def rel_call(self, target_rva: int):
+        target_rva = self.native_addresses.get(target_rva, target_rva)
         start = self.rva
         self.emit(b"\xE8")
         self.i32(target_rva - (start + 5))
 
     def rel_jump(self, target_rva: int):
+        target_rva = self.native_addresses.get(target_rva, target_rva)
         start = self.rva
         self.emit(b"\xE9")
         self.i32(target_rva - (start + 5))
 
     def rip(self, prefix: str, target_rva: int, instruction_length: int):
+        target_rva = self.native_addresses.get(target_rva, target_rva)
         start = self.rva
         self.emit(prefix)
         self.i32(target_rva - (start + instruction_length))
@@ -139,19 +157,19 @@ def _rel32(source_rva: int, instruction_length: int, target_rva: int) -> bytes:
     return struct.pack("<i", delta)
 
 
-def _apply_first_stage(data: bytearray, sections: list[_Section]):
+def _apply_first_stage(data: bytearray, sections: list[_Section], digest: str = ""):
     # Allow the native close-old-tab + spawn path when the source has one tab.
-    branch_rva = 0x16D382
+    branch_rva = native_rva(digest, 0x16D382)
     branch = _assert_bytes(data, sections, branch_rva, b"\x76\xE7", "single-tab JBE")
     data[branch:branch + 2] = b"\x90\x90"
 
     # A clipboard-launched child must not restore stale saved geometry over its
     # provisional tear-off coordinates.  Keep this compact verified cave so the
     # Python output remains equivalent to the already runtime-tested build.
-    hook_rva = 0x1DEC14
-    resume_rva = 0x1DEC1D
-    skip_rva = 0x1DEC8B
-    cave_rva = 0x216900
+    hook_rva = native_rva(digest, 0x1DEC14)
+    resume_rva = native_rva(digest, 0x1DEC1D)
+    skip_rva = native_rva(digest, 0x1DEC8B)
+    cave_rva = native_rva(digest, 0x216900)
     hook = _assert_bytes(
         data, sections, hook_rva,
         bytes.fromhex("83 BD 50 06 00 00 00 74 6E"),
@@ -180,8 +198,9 @@ def _apply_first_stage(data: bytearray, sections: list[_Section]):
 
 def _build_code(code_rva: int, state_rva: int,
                 cross_window_transfer_rva: int | None = None,
-                cross_window_preview_rva: int | None = None) -> tuple[bytes, dict[str, int]]:
-    e = _Emitter(code_rva)
+                cross_window_preview_rva: int | None = None,
+                digest: str = "") -> tuple[bytes, dict[str, int]]:
+    e = _Emitter(code_rva, digest)
     grip_anchor_x = state_rva
     grip_anchor_y = state_rva + 4
     grip_valid = state_rva + 8
@@ -312,7 +331,9 @@ def _build_code(code_rva: int, state_rva: int,
     for branch in (no_format, no_memory, success): e.patch_rel32(branch, publish_cleanup)
     e.emit("48 83 C4 38")
     publish_original = len(e.code); e.patch_rel32(no_placement, publish_original)
-    e.emit("0F 57 C0 48 89 B4 24 38 01 00 00 C3")
+    # CALL pushed a return address; replay the original caller's rsp+0x138 store.
+    e.emit("0F 57 C0 48 89 B4 24 40 01 00 00 C3" if e.is_085 else
+           "0F 57 C0 48 89 B4 24 38 01 00 00 C3")
 
     # Consume FPT2 into a child-only record before EmptyClipboard.
     stubs["clipboard_consume"] = e.rva
@@ -349,9 +370,16 @@ def _build_code(code_rva: int, state_rva: int,
 
     # Follow the physical left button and apply signed coordinates only in the child.
     stubs["child_apply"] = e.rva
+    if e.is_085:
+        # 0.8.5 removed the old epilogue load. Wrap its final drag-text update
+        # call instead; the native window object is live in nonvolatile r14.
+        e.emit("48 83 EC 28")
+        e.rel_call(0x1EA880)
+        e.emit("48 83 C4 28")
     e.rip("81 3D", placement, 10); e.i32(PLACEMENT_MAGIC)
     e.emit("0F 85 00 00 00 00"); apply_no_placement = len(e.code) - 4
-    e.emit("48 8B 8E B8 08 00 00 48 85 C9 0F 84 00 00 00 00")
+    e.emit("49 8B 8E B8 08 00 00 48 85 C9 0F 84 00 00 00 00" if e.is_085 else
+           "48 8B 8E B8 08 00 00 48 85 C9 0F 84 00 00 00 00")
     apply_no_window = len(e.code) - 4
     e.emit("48 83 EC 58 48 89 4C 24 48 48 8D 4C 24 38")
     e.rip("FF 15", 0x217788, 6)
@@ -381,7 +409,7 @@ def _build_code(code_rva: int, state_rva: int,
     apply_original = len(e.code)
     e.patch_rel32(apply_no_placement, apply_original)
     e.patch_rel32(apply_no_window, apply_original)
-    e.emit("8B 87 A0 01 00 00 C3")
+    e.emit("C3" if e.is_085 else "8B 87 A0 01 00 00 C3")
 
     # Correct each drag helper's POINT before its native HWND-positioning call.
     stubs["drag_image"] = e.rva
@@ -460,7 +488,7 @@ def apply_tab_patch(data: bytearray, original_sha256: str,
     if section_alignment != 0x1000 or file_alignment != 0x200:
         raise ValueError("unexpected PE alignment for tab patch")
 
-    _apply_first_stage(data, sections)
+    _apply_first_stage(data, sections, original_sha256)
     # Refresh .text metadata after the first-stage VirtualSize extension.
     _, coff, optional, table, sections = _pe_layout(data)
     mapped_end = max(section.rva + max(section.vsize, section.raw_size)
@@ -493,26 +521,31 @@ def apply_tab_patch(data: bytearray, original_sha256: str,
     struct.pack_into("<II", data, optional + 0x90, 0, 0)
 
     code, stubs = _build_code(code_rva, state_rva, cross_window_transfer_rva,
-                              cross_window_preview_rva)
+                              cross_window_preview_rva, original_sha256)
     data[code_raw:code_raw + len(code)] = code
     _, _, _, _, patched_sections = _pe_layout(data)
-    _write_hook(data, patched_sections, 0x16CFD3,
+    def write_hook(data, sections, rva, expected, destination, jump=False):
+        if original_sha256 == SHA256_085:
+            expected = TAB_HOOK_BYTES_085[rva]
+        _write_hook(data, sections, native_rva(original_sha256, rva),
+                    expected, destination, jump)
+    write_hook(data, patched_sections, 0x16CFD3,
                 bytes.fromhex("49 89 87 A0 0E 00 00"), stubs["activation"])
-    _write_hook(data, patched_sections, 0x18550C,
+    write_hook(data, patched_sections, 0x18550C,
                 bytes.fromhex("E8 AF 82 F8 FF"), stubs["export_call"], jump=True)
-    _write_hook(data, patched_sections, 0x203C3A,
+    write_hook(data, patched_sections, 0x203C3A,
                 bytes.fromhex("48 8D 4D 30 4C 89 7D 30 FF 15 40 3B 01 00 8B 45 30 83 4D CC 04 89 45 B0 8B 45 34 89 45 B4"),
                 stubs["worker_placement"])
-    _write_hook(data, patched_sections, 0x203BF3,
+    write_hook(data, patched_sections, 0x203BF3,
                 bytes.fromhex("0F 57 C0 48 89 B4 24 38 01 00 00"),
                 stubs["clipboard_publish"])
-    _write_hook(data, patched_sections, 0x1F8C22,
+    write_hook(data, patched_sections, 0x1F8C22,
                 bytes.fromhex("8B CF FF 15 66 EA 01 00"), stubs["clipboard_consume"])
-    _write_hook(data, patched_sections, 0x20518F,
+    write_hook(data, patched_sections, 0x20518F,
                 bytes.fromhex("8B 87 A0 01 00 00"), stubs["child_apply"])
-    _write_hook(data, patched_sections, 0x1E822D,
+    write_hook(data, patched_sections, 0x1E822D,
                 bytes.fromhex("48 8B 83 40 09 00 00"), stubs["drag_image"])
-    _write_hook(data, patched_sections, 0x1E84E3,
+    write_hook(data, patched_sections, 0x1E84E3,
                 bytes.fromhex("4C 89 BE 90 0A 00 00"), stubs["drag_text"])
 
     report = {

@@ -20,6 +20,8 @@ __pycache__/
 /patcher/*.pdb
 /patcher/*.ilk
 /patcher/*.exe
+/patcher/vendor/
+/patcher/*.res
 
 # Runtime diagnostics and visual captures
 /patcher/*.log
@@ -31,6 +33,8 @@ __pycache__/
 /binaries/release/*.exe
 !/binaries/release/FPilot-open-location-tab-merge.exe
 !/binaries/release/FPilot-all-patches.exe
+!/binaries/release/FPilot-0.8.5-open-location-tab-merge.exe
+!/binaries/release/FPilot-0.8.5-all-patches.exe
 
 # Ghidra per-user and transient state
 /ghidra/project/*.lock
