@@ -1,10 +1,11 @@
 param(
-    [string]$InputExe = (Join-Path $PSScriptRoot '..\binaries\input\FPilot-original.exe'),
-    [string]$OutputExe = (Join-Path $PSScriptRoot '..\binaries\release\FPilot-open-location-tab-merge.exe'),
+    [string]$InputExe = (Join-Path $PSScriptRoot '..\binaries\input\FPilot-0.8.5.exe'),
+    [string]$OutputExe = (Join-Path $PSScriptRoot '..\binaries\release\FPilot-0.8.5-open-location-tab-merge.exe'),
     [string]$PythonExe,
     [string]$UnicodeReport,
     [switch]$OpenLocationOnly,
-    [switch]$All
+    [switch]$All,
+    [switch]$Archives
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,7 +14,10 @@ if ($All -and $OpenLocationOnly) {
     throw '-All cannot be combined with -OpenLocationOnly'
 }
 if ($All -and -not $PSBoundParameters.ContainsKey('OutputExe')) {
-    $OutputExe = Join-Path $PSScriptRoot '..\binaries\release\FPilot-all-patches.exe'
+    $OutputExe = Join-Path $PSScriptRoot '..\binaries\release\FPilot-0.8.5-all-patches.exe'
+}
+if ($Archives -and -not $PSBoundParameters.ContainsKey('OutputExe')) {
+    $OutputExe = Join-Path $PSScriptRoot '..\binaries\release\FPilot-0.8.5-archives.exe'
 }
 $invocationDirectory = (Get-Location).Path
 if (-not [System.IO.Path]::IsPathRooted($InputExe)) {
@@ -69,6 +73,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $compile = 'call "{0}" >nul && cl /nologo /c /O2 /GS- /GR- /EHs-c- /Zl /W4 /DUNICODE /D_UNICODE /Brepro payload.cpp /Fopayload.obj && link /nologo /Brepro /dll /nodefaultlib /entry:DllMain /base:0x140270000 /fixed:no /dynamicbase:no /machine:x64 /out:payload.dll payload.obj' -f $vsDev
 $compileUnicode = 'call "{0}" >nul && cl /nologo /c /O2 /GS- /GR- /EHs-c- /Zl /W4 /DUNICODE /D_UNICODE /Brepro unicode_payload.cpp /Founicode_payload.obj && link /nologo /Brepro /dll /nodefaultlib /entry:DllMain /base:0x1402A0000 /fixed:no /dynamicbase:no /machine:x64 /out:unicode_payload.dll unicode_payload.obj' -f $vsDev
+$compileMenu = 'call "{0}" >nul && cl /nologo /c /O2 /GS- /GR- /EHs-c- /Zl /W4 /DUNICODE /D_UNICODE /Brepro menu_payload.cpp /Fomenu_payload.obj && link /nologo /Brepro /dll /nodefaultlib /entry:DllMain /base:0x1402D0000 /fixed:no /dynamicbase:no /machine:x64 /out:menu_payload.dll menu_payload.obj' -f $vsDev
 Push-Location $PSScriptRoot
 try {
     cmd.exe /d /c $compile
@@ -76,17 +81,34 @@ try {
     if ($includeUnicode) {
         cmd.exe /d /c $compileUnicode
         if ($LASTEXITCODE -ne 0) { throw "Unicode payload build failed with exit code $LASTEXITCODE" }
+        cmd.exe /d /c $compileMenu
+        if ($LASTEXITCODE -ne 0) { throw "Menu payload build failed with exit code $LASTEXITCODE" }
     }
 
+    if ($Archives) {
+        & (Join-Path $PSScriptRoot 'archive\build.ps1') -VsDev $vsDev
+    }
     $patchArguments = @('.\patch_filepilot.py', $InputExe, '.\payload.dll', $OutputExe)
     if ($OpenLocationOnly) { $patchArguments = @('.\patch_filepilot.py', '--open-location-only', $InputExe, '.\payload.dll', $OutputExe) }
     if ($includeUnicode) {
         $patchArguments = @($patchArguments[0], '--all', '--unicode-payload',
-            '.\unicode_payload.dll', '--layout-json', $UnicodeReport) +
+            '.\unicode_payload.dll', '--menu-payload', '.\menu_payload.dll',
+            '--layout-json', $UnicodeReport) +
             $patchArguments[1..($patchArguments.Length - 1)]
     }
-    & $PythonExe @patchArguments
-    if ($LASTEXITCODE -ne 0) { throw "Patch failed with exit code $LASTEXITCODE" }
+    if ($Archives) { $patchArguments = @($patchArguments[0], '--archives') + $patchArguments[1..($patchArguments.Length - 1)] }
+    # Windows PowerShell 5 treats redirected native stderr as ErrorRecords.
+    # LIEF diagnostics must not terminate a successful native build mid-write.
+    $savedErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $PythonExe @patchArguments
+        $patchExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $savedErrorAction
+    }
+    if ($patchExitCode -ne 0) { throw "Patch failed with exit code $patchExitCode" }
 }
 finally {
     Pop-Location

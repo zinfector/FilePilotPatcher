@@ -74,10 +74,13 @@ struct PayloadBindings {
     unsigned long long inputStateGlobal;
     unsigned long long frameGenerationGlobal;
     unsigned long long originalTabHoverTest;
+    unsigned long long displayAlternateIndirect;
+    unsigned long long appTabListOffset;
+    unsigned long long appDragOffset;
 };
 
 static constexpr unsigned long long kBindingsMagic = 0x53474e4942504c46ULL; // "FLPBINGS"
-static constexpr unsigned long long kBindingsVersion = 22;
+static constexpr unsigned long long kBindingsVersion = 23;
 
 extern "C" __declspec(dllexport) volatile PayloadBindings Bindings = {
     kBindingsMagic, kBindingsVersion, sizeof(PayloadBindings)
@@ -211,6 +214,10 @@ static bool TryApplyNamedSelection(unsigned long long selectionState, const char
         *reinterpret_cast<unsigned long long *>(displayState + Bindings.displayModeOffset)
         ? Bindings.displayPrimaryOffset : Bindings.displayAlternateOffset;
     unsigned long long displayItems = reinterpret_cast<unsigned long long>(displayState) + displayOffset;
+    if (Bindings.displayAlternateIndirect &&
+        !*reinterpret_cast<unsigned long long *>(displayState + Bindings.displayModeOffset))
+        displayItems = *reinterpret_cast<unsigned long long *>(displayItems);
+    if (!displayItems) return false;
     unsigned long long itemCount = *reinterpret_cast<unsigned long long *>(
         displayItems + Bindings.displayCountOffset) +
         *reinterpret_cast<unsigned long long *>(displayItems + Bindings.displayCountOffset + 8);
@@ -659,7 +666,7 @@ extern "C" __declspec(dllexport) bool __fastcall RemoteTabHoverHook(
     unsigned long long *itemState) {
     using OriginalFn = bool (__fastcall *)(unsigned long long *);
     bool remoteDrag = Bindings.tabIntegrationEnabled && g_filePilotApp
-        && *reinterpret_cast<unsigned long long *>(g_filePilotApp + 0xea8)
+        && *reinterpret_cast<unsigned long long *>(g_filePilotApp + Bindings.appDragOffset)
             == reinterpret_cast<unsigned long long>(g_remoteTabSentinel)
         && IsRemotePreviewFresh();
     return remoteDrag ? true
@@ -1001,7 +1008,7 @@ struct TabDestination {
 static unsigned long long GroupAtPoint(unsigned long long app, POINT point) {
     unsigned long long groups[64] = {};
     unsigned int groupCount = 0;
-    unsigned long long tab = *reinterpret_cast<unsigned long long *>(app + 0xc10);
+    unsigned long long tab = *reinterpret_cast<unsigned long long *>(app + Bindings.appTabListOffset);
     for (unsigned int guard = 0; tab && guard < 512; ++guard,
          tab = *reinterpret_cast<unsigned long long *>(tab + 0x88)) {
         unsigned long long group = *reinterpret_cast<unsigned long long *>(tab + 0x4f0);
@@ -1027,7 +1034,7 @@ static unsigned long long GroupAtPoint(unsigned long long app, POINT point) {
     // are persistent, so use the horizontally nearest strip with a matching vertical band.
     unsigned long long bestTabGroup = 0;
     int bestDistance = 0x7fffffff;
-    tab = *reinterpret_cast<unsigned long long *>(app + 0xc10);
+    tab = *reinterpret_cast<unsigned long long *>(app + Bindings.appTabListOffset);
     for (unsigned int guard = 0; tab && guard < 512; ++guard,
          tab = *reinterpret_cast<unsigned long long *>(tab + 0x88)) {
         TabUiRect rectangle = {};
@@ -1100,7 +1107,7 @@ extern "C" __declspec(dllexport) void __fastcall RemoteTabSurfaceHook(
     auto original = reinterpret_cast<OriginalFn>(Bindings.originalTabSurfaceRenderer);
     if (!original) return;
     unsigned long long localDrag = app
-        ? *reinterpret_cast<unsigned long long *>(app + 0xea8) : 0;
+        ? *reinterpret_cast<unsigned long long *>(app + Bindings.appDragOffset) : 0;
     if (Bindings.tabIntegrationEnabled && app && app == g_filePilotApp
         && g_crossWindowHwnd && localDrag && ResolveCrossWindowApis()) {
         _InterlockedExchange(&g_sourceTabDragActive, 1);
@@ -1130,10 +1137,10 @@ extern "C" __declspec(dllexport) void __fastcall RemoteTabSurfaceHook(
         return;
     }
 
-    auto drag = reinterpret_cast<unsigned long long *>(app + 0xea8);
+    auto drag = reinterpret_cast<unsigned long long *>(app + Bindings.appDragOffset);
     auto inputPoint = reinterpret_cast<unsigned long long *>(input);
     auto inputModifiers = reinterpret_cast<unsigned char *>(input + 0x38);
-    auto surfaceGeneration = reinterpret_cast<unsigned int *>(app + 0xe9c);
+    auto surfaceGeneration = reinterpret_cast<unsigned int *>(app + Bindings.appDragOffset - 0x0c);
     auto frameGeneration = reinterpret_cast<unsigned int *>(Bindings.frameGenerationGlobal);
     unsigned long long savedDrag = *drag;
     unsigned long long savedPoint = *inputPoint;
@@ -1158,16 +1165,16 @@ extern "C" __declspec(dllexport) void __fastcall RemoteTabSurfaceHook(
     original(app, group, context);
 
     unsigned long long destinationGroup =
-        *reinterpret_cast<unsigned long long *>(app + 0xeb0);
+        *reinterpret_cast<unsigned long long *>(app + Bindings.appDragOffset + 0x08);
     unsigned int destinationPlacement =
-        *reinterpret_cast<unsigned int *>(app + 0xec4);
+        *reinterpret_cast<unsigned int *>(app + Bindings.appDragOffset + 0x1c);
     if (destinationGroup && destinationPlacement == 2) {
         g_remotePreview.destinationValid = true;
         g_remotePreview.destinationGroup = destinationGroup;
         g_remotePreview.destinationBefore =
-            *reinterpret_cast<unsigned long long *>(app + 0xeb8);
+            *reinterpret_cast<unsigned long long *>(app + Bindings.appDragOffset + 0x10);
         g_remotePreview.destinationOrientation =
-            *reinterpret_cast<unsigned int *>(app + 0xec0);
+            *reinterpret_cast<unsigned int *>(app + Bindings.appDragOffset + 0x18);
         g_remotePreview.destinationPlacement = destinationPlacement;
         g_remotePreview.destinationPoint = g_remotePreview.screenPoint;
         g_remotePreview.destinationTick = g_crossWindowApis.getTickCount64();
