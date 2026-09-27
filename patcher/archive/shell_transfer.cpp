@@ -173,7 +173,7 @@ IDataObject* transferObject(const std::vector<std::wstring>& input){
     std::vector<Root> roots;bool hasVirtual=false;
     for(auto path:input){std::replace(path.begin(),path.end(),L'/',L'\\');while(path.size()>3&&path.back()==L'\\')path.pop_back();Root root;root.path=path;
         // A selected container is copied as the original file, not expanded.
-        if(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES){root.virtualEntry=resolve(path.c_str(),root.loc)&&!root.loc.inside.empty();hasVirtual|=root.virtualEntry;}
+        if(archivePath(path,false)&&GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES){root.virtualEntry=resolve(path.c_str(),root.loc)&&!root.loc.inside.empty();hasVirtual|=root.virtualEntry;}
         roots.push_back(std::move(root));}
     if(!hasVirtual)return nullptr;
     std::vector<TransferFile> files;std::set<std::wstring> names;
@@ -199,6 +199,7 @@ static void copyZone(const std::wstring& source,const std::wstring& destination)
     HANDLE out=CreateFileW((destination+L":Zone.Identifier").c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);if(out==INVALID_HANDLE_VALUE)throw std::runtime_error("Cannot preserve archive security-zone metadata");DWORD written=0;ok=WriteFile(out,data,n,&written,nullptr);CloseHandle(out);if(!ok||written!=n)throw std::runtime_error("Cannot preserve archive security-zone metadata");
 }
 bool launchEntry(HWND owner,const std::wstring& path){
+    if(!archivePath(path,false))return false;
     // Never extract a real on-disk archive merely because it has an archive suffix.
     if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES)return false;
     Location loc;if(!resolve(path.c_str(),loc)||loc.inside.empty()||loc.entry.directory)return false;

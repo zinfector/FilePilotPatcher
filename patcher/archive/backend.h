@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <mutex>
 #include <map>
@@ -34,7 +35,9 @@ struct Location {
     std::wstring physical;
     Entry entry;
 };
-bool extension(const std::wstring& name);
+bool extension(std::wstring_view name);
+// Lexical only: no allocation, filesystem access, or archive opening.
+bool archivePath(std::wstring_view path, bool includeLeaf = true);
 bool resolve(const wchar_t* path, Location& result);
 std::vector<Entry> children(const Location& location);
 void extractDialog(HWND owner);

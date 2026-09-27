@@ -39,6 +39,7 @@ public class FilePilotArchiveTrace extends GhidraScript {
                 }
             } else {
                 for(int i=1;i<args.length;i++) {
+                    if(args[i].startsWith("text:")) {String term=args[i].substring(5).toLowerCase();for(Data d:currentProgram.getListing().getDefinedData(true))if(d.hasStringValue()&&String.valueOf(d.getValue()).toLowerCase().contains(term)){out.println("STRING "+d.getAddress()+" "+d.getValue());refs(d.getAddress());}continue;}
                     if(args[i].startsWith("symbol:")) {for(Symbol s:currentProgram.getSymbolTable().getSymbols(args[i].substring(7))) {out.println("SYMBOL "+s.getName()+" "+s.getAddress());refs(s.getAddress());}continue;}
                     boolean exact=args[i].startsWith("only:");
                     Address a=toAddr(exact?args[i].substring(5):args[i]);
@@ -51,7 +52,7 @@ public class FilePilotArchiveTrace extends GhidraScript {
             try {
                 for(Function f : selected) {
                     monitor.checkCancelled(); out.println("\nFUNCTION "+f.getEntryPoint()+" "+f.getName()+" size="+f.getBody().getNumAddresses());
-                    if(f.getBody().getNumAddresses()>50000) {out.println("Skipped oversized function; inspect call-site disassembly separately."); continue;}
+                    if(f.getBody().getNumAddresses()>100000) {out.println("Skipped oversized function; inspect call-site disassembly separately."); continue;}
                     DecompileResults r=dec.decompileFunction(f,60,monitor);
                     out.println(r.decompileCompleted()?r.getDecompiledFunction().getC():r.getErrorMessage()); out.flush();
                 }
@@ -59,5 +60,3 @@ public class FilePilotArchiveTrace extends GhidraScript {
         }
     }
 }
-
-

@@ -22,6 +22,32 @@ using Clipboard = int(__fastcall*)(BYTE*);
 using Drag = void(__fastcall*)(BYTE*,size_t*,size_t*);
 Clipboard originalClipboard;
 Drag originalDrag;
+using SidebarOpen = void(__fastcall*)(void*,size_t*,int);
+SidebarOpen originalSidebarOpen;
+
+void __fastcall sidebarOpen(void* app,size_t* path,int directory){
+    // Recents/Places supply a cached type flag instead of using panel Open.
+    // Only archive candidates need an attribute query; never index a container here.
+    if(!directory && path){
+        try{
+            auto name=utf8Path((const char*)path[0],path[1]);
+            if(archivePath(name)){
+                DWORD physical=GetFileAttributesW(name.c_str());
+                if(physical!=INVALID_FILE_ATTRIBUTES){
+                    if((physical&FILE_ATTRIBUTE_DIRECTORY)||extension(name))directory=1;
+                }else{
+                    Location loc;
+                    if(resolve(name.c_str(),loc)){
+                        if(loc.entry.directory)directory=1;
+                        else if(launchEntry(GetActiveWindow(),name))return;
+                    }
+                }
+            }
+        }catch(const std::exception& e){MessageBoxA(GetActiveWindow(),e.what(),"File Pilot archives",MB_OK|MB_ICONERROR);return;}
+        catch(...){MessageBoxA(GetActiveWindow(),"Cannot open archive path.","File Pilot archives",MB_OK|MB_ICONERROR);return;}
+    }
+    originalSidebarOpen(app,path,directory);
+}
 
 std::wstring itemPath(BYTE* model,BYTE* item){
     if(!item)return {};
@@ -187,9 +213,11 @@ BOOL WINAPI attributesEx(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVOID buffer
     try{Location loc;if(level==GetFileExInfoStandard && resolve(path,loc)){auto d=(WIN32_FILE_ATTRIBUTE_DATA*)buffer;memset(d,0,sizeof(*d));d->dwFileAttributes=attrs(loc.entry);d->ftCreationTime=d->ftLastAccessTime=d->ftLastWriteTime=loc.entry.time;d->nFileSizeHigh=(DWORD)(loc.entry.size>>32);d->nFileSizeLow=(DWORD)loc.entry.size;return TRUE;}}catch(...){SetLastError(ERROR_PATH_NOT_FOUND);}return FALSE;
 }
 HANDLE WINAPI create(LPCWSTR name,DWORD access,DWORD share,LPSECURITY_ATTRIBUTES security,DWORD disposition,DWORD flags,HANDLE templ){
+    if(!name || !archivePath(name,(flags&FILE_FLAG_BACKUP_SEMANTICS)!=0))
+        return CreateFileW(name,access,share,security,disposition,flags,templ);
     // Opening the container's raw bytes remains possible without directory semantics.
     auto realAttrs=GetFileAttributesW(name);
-    if(realAttrs!=INVALID_FILE_ATTRIBUTES && !(flags&FILE_FLAG_BACKUP_SEMANTICS))return CreateFileW(name,access,share,security,disposition,flags,templ);
+    if(realAttrs!=INVALID_FILE_ATTRIBUTES && ((realAttrs&FILE_ATTRIBUTE_DIRECTORY) || !(flags&FILE_FLAG_BACKUP_SEMANTICS)))return CreateFileW(name,access,share,security,disposition,flags,templ);
     try{Location loc;if(resolve(name,loc)){
         if(disposition!=OPEN_EXISTING || (access&(GENERIC_WRITE|GENERIC_ALL|DELETE|FILE_WRITE_DATA|FILE_APPEND_DATA|FILE_WRITE_ATTRIBUTES|FILE_WRITE_EA))){SetLastError(ERROR_WRITE_PROTECT);return INVALID_HANDLE_VALUE;}
         auto h=std::make_shared<Handle>();h->location=loc;h->path=name;
@@ -203,6 +231,11 @@ BOOL WINAPI closeHandle(HANDLE key){
 }
 BOOL WINAPI findClose(HANDLE key){if(lookup(key))return closeHandle(key);return FindClose(key);}
 HANDLE WINAPI firstEx(LPCWSTR raw,FINDEX_INFO_LEVELS level,LPVOID data,FINDEX_SEARCH_OPS op,LPVOID filter,DWORD flags){
+    // Existing filesystem entries (including archive files) need no archive index.
+    HANDLE real=FindFirstFileExW(raw,level,data,op,filter,flags);
+    if(real!=INVALID_HANDLE_VALUE){decorate((WIN32_FIND_DATAW*)data);return real;}
+    if(!raw || !archivePath(raw))return real;
+    DWORD nativeError=GetLastError();
     try{std::wstring path=raw;auto slash=path.find_last_of(L"\\/");Location loc;
         if(slash!=path.npos && resolve(path.substr(0,slash).c_str(),loc)){
             if(!loc.entry.directory){SetLastError(ERROR_DIRECTORY);return INVALID_HANDLE_VALUE;}
@@ -214,7 +247,7 @@ HANDLE WINAPI firstEx(LPCWSTR raw,FINDEX_INFO_LEVELS level,LPVOID data,FINDEX_SE
             auto h=std::make_shared<Handle>();h->location=loc;h->find=true;Entry e=loc.entry;e.path=path.substr(slash+1);fill(e,(WIN32_FIND_DATAW*)data);return put(h);
         }
     }catch(...){SetLastError(ERROR_INVALID_DATA);return INVALID_HANDLE_VALUE;}
-    HANDLE h=FindFirstFileExW(raw,level,data,op,filter,flags);if(h!=INVALID_HANDLE_VALUE)decorate((WIN32_FIND_DATAW*)data);return h;
+    SetLastError(nativeError);return INVALID_HANDLE_VALUE;
 }
 HANDLE WINAPI first(LPCWSTR p,LPWIN32_FIND_DATAW d){return firstEx(p,FindExInfoStandard,d,FindExSearchNameMatch,nullptr,0);}
 BOOL WINAPI findNext(HANDLE key,LPWIN32_FIND_DATAW d){auto h=lookup(key);if(h){std::lock_guard<std::mutex> lock(h->mutex);return next(*h,d);}BOOL ok=FindNextFileW(key,d);if(ok)decorate(d);return ok;}
@@ -237,14 +270,22 @@ BOOL WINAPI info(HANDLE key,LPBY_HANDLE_FILE_INFORMATION data){auto h=lookup(key
 BOOL WINAPI changes(HANDLE key,LPVOID p,DWORD n,BOOL subtree,DWORD filter,LPDWORD returned,LPOVERLAPPED ov,LPOVERLAPPED_COMPLETION_ROUTINE callback){if(!lookup(key))return ReadDirectoryChangesW(key,p,n,subtree,filter,returned,ov,callback);if(returned)*returned=0;SetLastError(ERROR_NOT_SUPPORTED);return FALSE;}
 BOOL WINAPI exists(LPCWSTR p){return attributes(p)!=INVALID_FILE_ATTRIBUTES;}
 DWORD_PTR WINAPI shellInfo(LPCWSTR path,DWORD a,SHFILEINFOW* info,UINT size,UINT flags){
-    if(!(flags&SHGFI_PIDL))try{Location loc;if(resolve(path,loc)){if(flags&SHGFI_USEFILEATTRIBUTES)return SHGetFileInfoW(path,a,info,size,flags);return SHGetFileInfoW(path,attrs(loc.entry),info,size,flags|SHGFI_USEFILEATTRIBUTES);}}catch(...){}
+    if((flags&(SHGFI_PIDL|SHGFI_USEFILEATTRIBUTES)) || !path || !archivePath(path))
+        return SHGetFileInfoW(path,a,info,size,flags);
+    DWORD physical=GetFileAttributesW(path);
+    if(physical!=INVALID_FILE_ATTRIBUTES){
+        if(!(physical&FILE_ATTRIBUTE_DIRECTORY)&&extension(path))
+            return SHGetFileInfoW(path,physical|FILE_ATTRIBUTE_DIRECTORY,info,size,flags|SHGFI_USEFILEATTRIBUTES);
+        return SHGetFileInfoW(path,a,info,size,flags);
+    }
+    try{Location loc;if(resolve(path,loc))return SHGetFileInfoW(path,attrs(loc.entry),info,size,flags|SHGFI_USEFILEATTRIBUTES);}catch(...){}
     return SHGetFileInfoW(path,a,info,size,flags);
 }
 BOOL WINAPI write(HANDLE h,LPCVOID p,DWORD n,LPDWORD done,LPOVERLAPPED ov){if(lookup(h)){if(done)*done=0;SetLastError(ERROR_WRITE_PROTECT);return FALSE;}return WriteFile(h,p,n,done,ov);}
 BOOL WINAPI remove(LPCWSTR p){try{Location loc;if(resolve(p,loc)&&!loc.inside.empty()){SetLastError(ERROR_WRITE_PROTECT);return FALSE;}}catch(...){}return DeleteFileW(p);}
 // FILE_*_DIR_INFORMATION layouts. File Pilot 0.8.5 uses class 60 (name at +88).
 unsigned nameOffset(unsigned cls){switch(cls){case 1:return 64;case 2:return 68;case 3:return 94;case 12:return 12;case 37:return 104;case 38:return 80;case 60:return 88;case 63:return 114;default:return 0;}}
-void decorateNt(void* buffer,ULONG bytes,unsigned cls){unsigned off=nameOffset(cls);if(!off || cls==12)return;auto p=(BYTE*)buffer;ULONG pos=0;while(pos+off<=bytes){ULONG len=*(ULONG*)(p+pos+60);if(len>bytes-pos-off)break;std::wstring name((wchar_t*)(p+pos+off),len/2);DWORD& a=*(DWORD*)(p+pos+56);if(!(a&FILE_ATTRIBUTE_DIRECTORY)&&extension(name))a|=FILE_ATTRIBUTE_DIRECTORY;ULONG next=*(ULONG*)(p+pos);if(!next || next>bytes-pos)break;pos+=next;}}
+void decorateNt(void* buffer,ULONG bytes,unsigned cls){unsigned off=nameOffset(cls);if(!off || cls==12)return;auto p=(BYTE*)buffer;ULONG pos=0;while(pos+off<=bytes){ULONG len=*(ULONG*)(p+pos+60);if(len>bytes-pos-off)break;DWORD& a=*(DWORD*)(p+pos+56);if(!(a&FILE_ATTRIBUTE_DIRECTORY)&&extension(std::wstring_view((wchar_t*)(p+pos+off),len/2)))a|=FILE_ATTRIBUTE_DIRECTORY;ULONG next=*(ULONG*)(p+pos);if(!next || next>bytes-pos)break;pos+=next;}}
 NTSTATUS NTAPI query(HANDLE key,HANDLE event,PIO_APC_ROUTINE apc,PVOID context,PIO_STATUS_BLOCK ios,PVOID buffer,ULONG length,FILE_INFORMATION_CLASS cls,BOOLEAN single,PUNICODE_STRING pattern,BOOLEAN restart){
     auto h=lookup(key);if(!h){auto status=ntQuery(key,event,apc,context,ios,buffer,length,cls,single,pattern,restart);if(status==0)decorateNt(buffer,(ULONG)ios->Information,(unsigned)cls);return status;}
     unsigned off=nameOffset((unsigned)cls);NTSTATUS status=0;
@@ -305,6 +346,7 @@ extern "C" __declspec(dllexport) void WINAPI ArchiveInstall(BYTE* host,const Arc
     }
     if(ntPointerRva){DWORD old;auto slot=(void**)(host+ntPointerRva);VirtualProtect(slot,8,PAGE_READWRITE,&old);*slot=(void*)query;VirtualProtect(slot,8,old,&old);}
     installOpen(host);
+    originalSidebarOpen=(SidebarOpen)detour(host+native.sidebarOpenRva,native.sidebarOpenPrologueBytes,(void*)sidebarOpen);
     originalClipboard=(Clipboard)detour(host+native.clipboardRva,native.clipboardPrologueBytes,(void*)clipboard);
     originalDrag=(Drag)detour(host+native.dragRva,native.dragPrologueBytes,(void*)drag);
     keyboard=SetWindowsHookExW(WH_GETMESSAGE,messages,nullptr,GetCurrentThreadId());
