@@ -26,6 +26,7 @@ struct StartupBindings {
     unsigned long long workerLimit, standbySeconds, enabled;
     unsigned long long functionTable, functionCount, payloadBase;
     unsigned long long showWindowIat;
+    unsigned long long watchQueue;
 };
 extern "C" __declspec(dllexport) volatile StartupBindings StartupSettings = {
     0x3154524154535046ULL, 1, sizeof(StartupBindings)
@@ -39,7 +40,8 @@ extern "C" __declspec(dllexport) volatile StartupBindings StartupSettings = {
  X(WaitForSingleObject) X(WaitForMultipleObjects) X(OpenProcess) X(OpenThread) X(GetProcessTimes) \
  X(CloseHandle) X(CreateProcessW) X(ExitProcess) X(VirtualAlloc) X(VirtualFree) X(VirtualProtect) \
  X(CreateMemoryResourceNotification) X(QueryMemoryResourceNotification) X(QueueUserWorkItem) \
- X(GlobalMemoryStatusEx) X(GetLastError) X(SetLastError) X(GetEnvironmentStringsW) X(FreeEnvironmentStringsW) X(RtlAddFunctionTable) X(GetStartupInfoW)
+ X(GlobalMemoryStatusEx) X(GetLastError) X(SetLastError) X(GetEnvironmentStringsW) X(FreeEnvironmentStringsW) X(RtlAddFunctionTable) X(GetStartupInfoW) \
+ X(TlsAlloc) X(TlsSetValue) X(TlsGetValue) X(ReadDirectoryChangesW)
 #define USER_APIS(X) \
  X(GetCursorPos) X(GetForegroundWindow) X(GetWindowThreadProcessId) X(AllowSetForegroundWindow) \
  X(SetTimer) X(KillTimer) X(SetWindowLongPtrW) X(CallWindowProcW) X(InvalidateRect) X(CreateWindowExW) \
@@ -67,6 +69,62 @@ static ID3D11DeviceContext *g_context;
 static IDWriteFactory *g_fontFactory;
 static IDWriteFontCollection *g_fontCollection;
 static D3D_FEATURE_LEVEL g_featureLevel;
+static DWORD g_watchTls = TLS_OUT_OF_INDEXES;
+
+// Only the queue's initialization zero-fill calls this hook. Record its address
+// until the first directory read, after all startup arena growth has finished.
+extern "C" __declspec(dllexport) void *StartupWatchZero(void *block, int value, SIZE_T bytes) {
+    memset(block, value, bytes);
+    if (g_watchTls != TLS_OUT_OF_INDEXES && !value && bytes == 16 * 1024 * 1024)
+        apiTlsSetValue(g_watchTls, block);
+    return block;
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI StartupWatchRead(
+    HANDLE directory, LPVOID buffer, DWORD length, BOOL subtree, DWORD filter,
+    LPDWORD returned, LPOVERLAPPED overlapped, LPOVERLAPPED_COMPLETION_ROUTINE completion) {
+    if (g_watchTls != TLS_OUT_OF_INDEXES) {
+        auto block = reinterpret_cast<ULONG_PTR>(apiTlsGetValue(g_watchTls));
+        apiTlsSetValue(g_watchTls, nullptr);
+        if (block) {
+            // Adjacent arena objects share the boundary pages. Retain those;
+            // only untouched, whole interior pages become demand committed.
+            ULONG_PTR first = (block + 4095) & ~ULONG_PTR(4095);
+            ULONG_PTR end = (block + 16 * 1024 * 1024) & ~ULONG_PTR(4095);
+            if (end > first) apiVirtualFree(reinterpret_cast<void *>(first), end - first, MEM_DECOMMIT);
+        }
+    }
+    return apiReadDirectoryChangesW(directory, buffer, length, subtree, filter, returned, overlapped, completion);
+}
+
+extern "C" __declspec(dllexport) void StartupWatchQueue(
+    unsigned long long *arena, unsigned long long *watch, unsigned char *record) {
+    // Native producer serializes a record from the scratch arena, then publishes
+    // the write counter. Commit its destination before that publication. The
+    // UI consumer can only read published bytes; committed pages are never
+    // reclaimed while the queue is running. Preserve the native 16 MiB bound.
+    ULONGLONG bytes = arena[5] + arena[4] - reinterpret_cast<ULONGLONG>(record);
+    ULONGLONG capacity = watch[0x18];
+    auto written = static_cast<ULONGLONG>(_InterlockedCompareExchange64(
+        reinterpret_cast<volatile LONG64 *>(watch + 0x28), 0, 0));
+    // Commit even when a snapshot would show a full queue: the consumer may
+    // free space before the native producer repeats its capacity check.
+    if (capacity && bytes <= capacity) {
+        ULONGLONG offset = written % capacity;
+        SIZE_T first = static_cast<SIZE_T>(bytes < capacity - offset ? bytes : capacity - offset);
+        SIZE_T second = static_cast<SIZE_T>(bytes) - first;
+        auto base = reinterpret_cast<unsigned char *>(watch[0x19]);
+        while ((first && !apiVirtualAlloc(base + offset, first, MEM_COMMIT, PAGE_READWRITE)) ||
+               (second && !apiVirtualAlloc(base, second, MEM_COMMIT, PAGE_READWRITE))) {
+            // On commit exhaustion retain the pending record and retry. The
+            // existing watcher cancellation event also makes shutdown bounded.
+            if (apiWaitForSingleObject(reinterpret_cast<HANDLE>(watch[0x40]), 16) != WAIT_TIMEOUT)
+                return;
+        }
+    }
+    reinterpret_cast<void (*)(unsigned long long *, unsigned long long *, unsigned char *)>(
+        StartupSettings.watchQueue)(arena, watch, record);
+}
 // The native renderer discards its 8192-instance buffer for every batch,
 // including single rectangles. Append instead: previously submitted ranges
 // remain untouched until WRITE_DISCARD gives the driver a new backing store.
@@ -227,6 +285,7 @@ static bool Initialize() {
 #define LOAD_USER(n) api##n = reinterpret_cast<decltype(api##n)>(apiGetProcAddress(user, #n)); if (!api##n) return false;
     KERNEL_APIS(LOAD_KERNEL)
     USER_APIS(LOAD_USER)
+    g_watchTls = apiTlsAlloc();
     if (StartupSettings.functionCount)
         apiRtlAddFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(StartupSettings.functionTable),
             static_cast<DWORD>(StartupSettings.functionCount), StartupSettings.payloadBase);
@@ -436,7 +495,7 @@ static DWORD WINAPI SpawnStandby(void *) {
     _InterlockedExchange(&g_spawning, 0); return 0;
 }
 static void ScheduleStandby() {
-    if (!g_ready || !StartupSettings.enabled || !EnvNumber(L"FPILOT_WARM", 1, 0, 1)) return;
+    if (!g_ready || !StartupSettings.enabled || !EnvNumber(L"FPILOT_WARM", 0, 0, 1)) return;
     ULONGLONG now = apiGetTickCount64();
     if (now < g_nextSpawn) return;
     g_nextSpawn = now + 30000;
@@ -505,7 +564,7 @@ extern "C" __declspec(dllexport) void StartupEntry() {
     if (argv) apiLocalFree(argv);
     if (g_standby) {
         if (!AwaitRequest()) apiExitProcess(0);
-    } else if (eligible && !HasNativePanelTransfer() && EnvNumber(L"FPILOT_WARM", 1, 0, 1)) {
+    } else if (eligible && !HasNativePanelTransfer() && EnvNumber(L"FPILOT_WARM", 0, 0, 1)) {
         STARTUPINFOW info{}; info.cb = sizeof(info); apiGetStartupInfoW(&info);
         if (info.dwFlags & ~(STARTF_USEPOSITION | STARTF_USESHOWWINDOW | STARTF_FORCEONFEEDBACK | STARTF_FORCEOFFFEEDBACK))
             eligible = false;
@@ -560,7 +619,7 @@ extern "C" __declspec(dllexport) void StartupQueue(const StringView *json, unsig
             si.dwFlags = STARTF_USEPOSITION; si.dwX = point.x; si.dwY = point.y;
         }
     }
-    if (g_ready && EnvNumber(L"FPILOT_WARM", 1, 0, 1) && Deliver(g_defaultCommand, nullptr, json, &si, nullptr, placement)) {
+    if (g_ready && EnvNumber(L"FPILOT_WARM", 0, 0, 1) && Deliver(g_defaultCommand, nullptr, json, &si, nullptr, placement)) {
         if (StartupSettings.placementPending) *reinterpret_cast<unsigned int *>(StartupSettings.placementPending) = 0;
         return;
     }
@@ -574,7 +633,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI StartupCreateProcess(
     if (g_ready && !pa && !ta && !inherit && !flags && !environment &&
         (!startup || !(startup->dwFlags & ~(STARTF_USEPOSITION | STARTF_USESHOWWINDOW))) &&
         !HasNativePanelTransfer() && app && Equal(app, g_exe) &&
-        EnvNumber(L"FPILOT_WARM", 1, 0, 1) && Deliver(command ? command : g_defaultCommand, directory, nullptr, startup, info)) return TRUE;
+        EnvNumber(L"FPILOT_WARM", 0, 0, 1) && Deliver(command ? command : g_defaultCommand, directory, nullptr, startup, info)) return TRUE;
     if (!apiCreateProcessW)
         apiCreateProcessW = reinterpret_cast<decltype(apiCreateProcessW)>(apiGetProcAddress(apiLoadLibraryW(L"kernel32.dll"), "CreateProcessW"));
     return apiCreateProcessW(app, command, pa, ta, inherit, flags, environment, directory, startup, info);

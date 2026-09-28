@@ -8,7 +8,7 @@ from native_profiles import SHA256_085
 
 def apply(image: bytes, original_digest: str, payload: Path, *, frame_site: int,
           pending_rva: int = 0, unicode_maintenance: int = 0, menu_maintenance: int = 0,
-          worker_limit: int = 4, standby_seconds: int = 90):
+          worker_limit: int = 4, standby_seconds: int = 30):
     if original_digest != SHA256_085:
         raise ValueError("startup optimization currently supports only the original 0.8.5 build")
     binary = lief.PE.parse(list(image))
@@ -41,14 +41,15 @@ def apply(image: bytes, original_digest: str, payload: Path, *, frame_site: int,
     imports = {e.name: binary.optional_header.imagebase + e.iat_address
                for library in binary.imports for e in library.entries if e.name}
     exception = dll.data_directories[3]
-    values = (0x3154524154535046, 1, 22 * 8,
+    values = (0x3154524154535046, 1, 23 * 8,
               imports['LoadLibraryW'], imports['GetProcAddress'], imports['GetCommandLineW'],
               base + binary.optional_header.addressof_entrypoint, base + 0x17B7C0,
               base + 0x1FABA0, base + 0x10F460,
               base + previous_frame, base + 0x249240, base + pending_rva if pending_rva else 0,
               unicode_maintenance, menu_maintenance, worker_limit, standby_seconds, 1,
-              base + start + exception.rva, exception.size // 12, base + start, imports['ShowWindow'])
-    struct.pack_into('<22Q', mapped, exports['StartupSettings'], *values)
+              base + start + exception.rva, exception.size // 12, base + start, imports['ShowWindow'],
+              base + 0x1EF5C0)
+    struct.pack_into('<23Q', mapped, exports['StartupSettings'], *values)
     section = lief.PE.Section('.fps')
     section.virtual_address = start
     section.content = list(mapped)
@@ -57,6 +58,8 @@ def apply(image: bytes, original_digest: str, payload: Path, *, frame_site: int,
     binary.optional_header.addressof_entrypoint = start + exports['StartupEntry']
     # Existing payloads also use absolute bindings and require their fixed base.
     binary.optional_header.dll_characteristics &= ~0x40
+    # Keep the full stack reservation and Windows guard-page growth.
+    binary.optional_header.sizeof_stack_commit = 128 * 1024
     builder = lief.PE.Builder(binary, lief.PE.Builder.config_t())
     builder.build()
     output = bytearray(builder.raw_bytes())
@@ -79,6 +82,11 @@ def apply(image: bytes, original_digest: str, payload: Path, *, frame_site: int,
     patch_call(0x1E1520, addr('StartupCreateWindow'), indirect=True)
     patch_call(0x488DB, addr('StartupD3D'), 0x2181B4)
     patch_call(0x4892A, addr('StartupD3D'), 0x2181B4)
+    patch_call(0x1ECA54, addr('StartupWatchZero'), 0x2147E0)
+    for site in (0x1ECC90, 0x1ECF78):
+        patch_call(site, addr('StartupWatchRead'), indirect=True)
+    for site in (0x1ECEFC, 0x1ED7D4, 0x1EDA1B, 0x1EE44A, 0x1EE574, 0x1EE5A6, 0x1EE6AC):
+        patch_call(site, addr('StartupWatchQueue'), 0x1EF5C0)
     # FUN_14004A640 has already resolved the texture, shader constants and
     # sampler. Replace only its Map/copy/Unmap/DrawInstanced tail. Keep its
     # prologue, texture lifetime management, draw counter and epilogue intact.
@@ -126,9 +134,30 @@ def apply(image: bytes, original_digest: str, payload: Path, *, frame_site: int,
     off = offset(0x1E538C)
     if output[off:off + 6] != bytes.fromhex('41 be 00 00 00 01'):
         raise ValueError('job arena commit policy seam changed')
-    output[off:off + 6] = bytes.fromhex('41 be 00 00 10 00')
+    output[off:off + 6] = bytes.fromhex('41 be 00 00 01 00')
+    # These are commit quanta, not reservation sizes or array capacities.
+    # Preserve the allocator's growth/rounding logic and native object layout.
+    pool_sites = (
+        (0x61A5A, '41bf00001000', 2),         # directory state arena
+        (0x61D3E, '48c7871002000000001000', 7), # directory strings arena
+        (0x63851, '48c70700001000', 3),      # alternate directory state constructor
+        (0x17B8CB, '48c70100001000', 3),     # first application frame arena
+        (0x17B8D7, '48c7878000000000001000', 7), # second application frame arena
+    )
+    for site, expected, immediate in pool_sites:
+        raw = bytes.fromhex(expected)
+        off = offset(site)
+        if output[off:off + len(raw)] != raw:
+            raise ValueError(f'native arena commit seam changed at {site:x}')
+        struct.pack_into('<I', output, off + immediate, 64 * 1024)
     return output, {
-        'worker_limit': worker_limit, 'job_arena_commit_increment': 1024 * 1024,
+        'worker_limit': worker_limit, 'job_arena_commit_increment': 64 * 1024,
+        'stack_initial_commit': 128 * 1024,
+        'stack_reservation': binary.optional_header.sizeof_stack_reserve,
+        'native_pool_commit_increment': 64 * 1024,
+        'native_pool_sites': [hex(site) for site, _, _ in pool_sites],
+        'filesystem_queue': '16 MiB capacity; interior pages decommitted before first read, committed before publishing records; retained until watcher destruction',
+        'standby_default': 'disabled; opt in with FPILOT_WARM=1',
         'standby_limit': 1, 'standby_seconds': standby_seconds,
         'standby_stage': 'preloaded D3D11 device and shared DirectWrite font collection, before native entry',
         'renderer_upload': {
