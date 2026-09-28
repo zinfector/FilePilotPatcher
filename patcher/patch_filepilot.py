@@ -928,7 +928,8 @@ def build_unicode_payload_image(payload: bytes, target: TargetImage, section_rva
                for name in ("UnicodeMeasureTextHook", "UnicodeRenderTextHook",
                             "UnicodeFontCreateAtlasHook",
                             "UnicodeUtf16ToUtf8Hook", "UnicodeDebug",
-                            "UnicodeExperiment", "Bindings")}
+                            "UnicodeExperiment", "Bindings", "UnicodeCacheMaintenance",
+                            "ResourceBudgetEnabled")}
     image_size = u32(payload, optional + 56)
     mapped = bytearray(image_size - UNICODE_PAYLOAD_FIRST_RVA)
     for section in sections:
@@ -985,7 +986,8 @@ def build_menu_payload_image(payload: bytes, target: TargetImage, section_rva: i
     _, _, optional, _, sections = pe_layout(payload)
     payload_image_base = u64(payload, optional + 24)
     exports = {name: find_export(payload, optional, sections, name.encode("ascii"))
-               for name in ("MenuAcquireHook", "MenuReleaseHook", "MenuExperiment", "Bindings")}
+               for name in ("MenuAcquireHook", "MenuReleaseHook", "MenuExperiment", "Bindings",
+                            "MenuCacheMaintenance", "ResourceBudgetEnabled")}
     image_size = u32(payload, optional + 56)
     mapped = bytearray(image_size - MENU_PAYLOAD_FIRST_RVA)
     for section in sections:
@@ -1138,8 +1140,11 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
           layout_path: Path | None = None, include_tab: bool = True,
           include_unicode: bool = False, unicode_payload_path: Path | None = None,
           include_menu: bool = False, menu_payload_path: Path | None = None,
-          include_archives: bool = False):
+          include_archives: bool = False, include_startup: bool = False,
+          startup_payload_path: Path | None = None):
     target = TargetImage(target_path)
+    if include_startup and (target.digest != SHA256_085 or startup_payload_path is None):
+        raise ValueError("startup optimization needs the original 0.8.5 input and --startup-payload")
     if include_tab and target.digest not in TAB_SUPPORTED_SHA256:
         raise ValueError(
             "tab tear-off patch has no verified profile for input SHA-256 "
@@ -1275,6 +1280,33 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
         report["tab_tearoff"] = apply_tab_patch(
             output, target.digest, cross_window_transfer_rva,
             cross_window_preview_rva)
+    if include_startup:
+        from startup_patch import apply as apply_startup
+        _, _, _, _, current_sections = pe_layout(output)
+        unicode_maintenance = menu_maintenance = 0
+        if unicode_layout is not None:
+            flag = unicode_payload_va + unicode_exports["ResourceBudgetEnabled"] - target.image_base
+            struct.pack_into('<I', output, rva_to_file(current_sections, flag), 1)
+            unicode_maintenance = unicode_payload_va + unicode_exports["UnicodeCacheMaintenance"]
+        if menu_layout is not None:
+            flag = menu_payload_va + menu_exports["ResourceBudgetEnabled"] - target.image_base
+            struct.pack_into('<I', output, rva_to_file(current_sections, flag), 1)
+            menu_maintenance = menu_payload_va + menu_exports["MenuCacheMaintenance"]
+        pending = int(report["tab_tearoff"]["state_rva"], 16) + 0x60 if include_tab else 0
+        output, report["startup"] = apply_startup(
+            bytes(output), target.digest, startup_payload_path,
+            frame_site=layout.frame_site - target.image_base, pending_rva=pending,
+            unicode_maintenance=unicode_maintenance, menu_maintenance=menu_maintenance)
+        report["patches"]["startup_resources"] = True
+        if unicode_layout is not None:
+            report["unicode"]["resource_budget"] = {
+                "row_bytes": 8 * 1024 * 1024,
+                "pressure_row_bytes": 2 * 1024 * 1024,
+                "shared_rasters": "read-only named mappings with private native GPU descriptors",
+                "retirement": "on insertion; retain descriptors used by the current frame",
+            }
+        if menu_layout is not None:
+            report["context_menu"]["strategy"] = "16 selected-item entries plus two background entries, post-close destruction, 120-second idle retirement"
     if include_archives:
         from archive_patch import apply as apply_archives
         patcher_dir = Path(__file__).resolve().parent
@@ -1338,6 +1370,9 @@ def main():
                         help="compiled menu_payload.dll used with --all")
     parser.add_argument("--archives", action="store_true",
                         help="embed archive browsing and direct extraction (Ctrl+Shift+E)")
+    parser.add_argument("--startup", action="store_true",
+                        help="enable bounded warm launches and resource budgets (0.8.5)")
+    parser.add_argument("--startup-payload", type=Path, help="compiled startup_payload.dll")
     parser.add_argument("input", type=Path, help="unpatched File Pilot executable")
     parser.add_argument("payload", type=Path, nargs="?", help="compiled payload DLL")
     parser.add_argument("output", type=Path, nargs="?", help="patched standalone executable")
@@ -1360,7 +1395,7 @@ def main():
         parser.error("--all requires --menu-payload")
     patch(args.input, args.payload, args.output, args.layout_json,
           not args.open_location_only, include_unicode, args.unicode_payload,
-          include_menu, args.menu_payload, args.archives)
+          include_menu, args.menu_payload, args.archives, args.startup, args.startup_payload)
 
 
 if __name__ == "__main__":

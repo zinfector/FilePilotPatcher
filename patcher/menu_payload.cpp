@@ -120,7 +120,15 @@ struct CacheEntry {
     unsigned long long *wrapper;
     unsigned long long lastUse;
     unsigned int activeUses;
+    unsigned long long lastUseMs;
 };
+
+extern "C" __declspec(dllexport) volatile unsigned int ResourceBudgetEnabled = 0;
+static unsigned long long Now() {
+    static decltype(&GetTickCount64) ticks;
+    if (!ticks) ticks = reinterpret_cast<decltype(ticks)>(pGetProcAddress()(pLoadLibraryW()(L"kernel32.dll"), "GetTickCount64"));
+    return ticks ? ticks() : 0;
+}
 
 static CacheEntry g_cache[kCacheCapacity];
 static unsigned long long *g_deferredReleases[kDeferredCapacity];
@@ -267,7 +275,7 @@ static void SyncCacheTelemetry() {
     for (unsigned int index = 0; index < kCacheCapacity; ++index) {
         if (g_cache[index].wrapper) ++count;
     }
-    MenuExperiment.cacheCapacity = kCacheCapacity;
+    MenuExperiment.cacheCapacity = ResourceBudgetEnabled ? 18 : kCacheCapacity;
     MenuExperiment.cacheEntries = count;
     MenuExperiment.deferredCount = g_deferredCount;
     if (count)
@@ -300,6 +308,12 @@ static int FindInstallSlot(const MenuKey &key) {
     unsigned int begin = key.selectionCount ? 0 : kSelectedCacheCapacity;
     unsigned int end = key.selectionCount ?
         kSelectedCacheCapacity : kCacheCapacity;
+    if (ResourceBudgetEnabled) {
+        // COM extensions do not expose their retained heap sizes. Bound the
+        // number of wrappers and reject very large selection/context keys.
+        if (key.selectionTextBytes + key.contextTextBytes + key.folderLength > 65536) return -1;
+        end = key.selectionCount ? 16 : kSelectedCacheCapacity + 2;
+    }
     for (unsigned int index = begin; index < end; ++index) {
         if (!g_cache[index].wrapper) return static_cast<int>(index);
     }
@@ -334,6 +348,7 @@ static bool InstallCacheEntry(const MenuKey &key, unsigned long long *wrapper) {
     entry.key = key;
     entry.wrapper = wrapper;
     entry.lastUse = ++g_useClock;
+    entry.lastUseMs = Now();
     entry.activeUses = 1;
     MenuExperiment.cachedWrapper = reinterpret_cast<unsigned long long>(wrapper);
     MenuExperiment.lastCacheSlot = static_cast<unsigned int>(slot);
@@ -373,6 +388,7 @@ extern "C" __declspec(dllexport) unsigned long long *__fastcall MenuAcquireHook(
             CacheEntry &entry = g_cache[slot];
             MenuExperiment.cacheHits++;
             entry.lastUse = ++g_useClock;
+            entry.lastUseMs = Now();
             entry.activeUses++;
             MenuExperiment.cachedWrapper =
                 reinterpret_cast<unsigned long long>(entry.wrapper);
@@ -406,6 +422,23 @@ extern "C" __declspec(dllexport) void __fastcall MenuReleaseHook(
         return;
     }
     ForwardRelease(wrapper);
+    DrainDeferredReleases();
+}
+
+extern "C" __declspec(dllexport) void MenuCacheMaintenance(unsigned mode) {
+    if (!ResourceBudgetEnabled) return;
+    for (unsigned i = 0; i < kCacheCapacity; ++i)
+        if (g_cache[i].activeUses) return;
+    unsigned long long now = Now();
+    for (unsigned i = 0; i < kCacheCapacity; ++i) {
+        CacheEntry &entry = g_cache[i];
+        if (!entry.wrapper || entry.activeUses || (!mode && now - entry.lastUseMs < 120000)) continue;
+        auto wrapper = entry.wrapper;
+        entry.wrapper = nullptr; entry.activeUses = 0;
+        // Clear ownership before releasing COM: release may re-enter the UI.
+        ForwardRelease(wrapper);
+        MenuExperiment.cacheEvictions++;
+    }
     DrainDeferredReleases();
 }
 

@@ -5,7 +5,8 @@ param(
     [string]$UnicodeReport,
     [switch]$OpenLocationOnly,
     [switch]$All,
-    [switch]$Archives
+    [switch]$Archives,
+    [switch]$Startup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +19,9 @@ if ($All -and -not $PSBoundParameters.ContainsKey('OutputExe')) {
 }
 if ($Archives -and -not $PSBoundParameters.ContainsKey('OutputExe')) {
     $OutputExe = Join-Path $PSScriptRoot '..\binaries\release\FPilot-0.8.5-archives.exe'
+}
+if ($Startup -and -not $PSBoundParameters.ContainsKey('OutputExe')) {
+    $OutputExe = Join-Path $PSScriptRoot '..\binaries\release\FPilot-0.8.5-optimized.exe'
 }
 $invocationDirectory = (Get-Location).Path
 if (-not [System.IO.Path]::IsPathRooted($InputExe)) {
@@ -74,6 +78,7 @@ if ($LASTEXITCODE -ne 0) {
 $compile = 'call "{0}" >nul && cl /nologo /c /O2 /GS- /GR- /EHs-c- /Zl /W4 /DUNICODE /D_UNICODE /Brepro payload.cpp /Fopayload.obj && link /nologo /Brepro /dll /nodefaultlib /entry:DllMain /base:0x140270000 /fixed:no /dynamicbase:no /machine:x64 /out:payload.dll payload.obj' -f $vsDev
 $compileUnicode = 'call "{0}" >nul && cl /nologo /c /O2 /GS- /GR- /EHs-c- /Zl /W4 /DUNICODE /D_UNICODE /Brepro unicode_payload.cpp /Founicode_payload.obj && link /nologo /Brepro /dll /nodefaultlib /entry:DllMain /base:0x1402A0000 /fixed:no /dynamicbase:no /machine:x64 /out:unicode_payload.dll unicode_payload.obj' -f $vsDev
 $compileMenu = 'call "{0}" >nul && cl /nologo /c /O2 /GS- /GR- /EHs-c- /Zl /W4 /DUNICODE /D_UNICODE /Brepro menu_payload.cpp /Fomenu_payload.obj && link /nologo /Brepro /dll /nodefaultlib /entry:DllMain /base:0x1402D0000 /fixed:no /dynamicbase:no /machine:x64 /out:menu_payload.dll menu_payload.obj' -f $vsDev
+$compileStartup = 'call "{0}" >nul && cl /nologo /c /O2 /GS- /GR- /EHs-c- /Zl /W4 /DUNICODE /D_UNICODE /Brepro startup_payload.cpp /Fostartup_payload.obj && link /nologo /Brepro /dll /nodefaultlib /entry:DllMain /base:0x140300000 /fixed:no /dynamicbase:no /machine:x64 /out:startup_payload.dll startup_payload.obj' -f $vsDev
 Push-Location $PSScriptRoot
 try {
     cmd.exe /d /c $compile
@@ -88,6 +93,10 @@ try {
     if ($Archives) {
         & (Join-Path $PSScriptRoot 'archive\build.ps1') -VsDev $vsDev
     }
+    if ($Startup) {
+        cmd.exe /d /c $compileStartup
+        if ($LASTEXITCODE -ne 0) { throw "Startup payload build failed with exit code $LASTEXITCODE" }
+    }
     $patchArguments = @('.\patch_filepilot.py', $InputExe, '.\payload.dll', $OutputExe)
     if ($OpenLocationOnly) { $patchArguments = @('.\patch_filepilot.py', '--open-location-only', $InputExe, '.\payload.dll', $OutputExe) }
     if ($includeUnicode) {
@@ -97,6 +106,7 @@ try {
             $patchArguments[1..($patchArguments.Length - 1)]
     }
     if ($Archives) { $patchArguments = @($patchArguments[0], '--archives') + $patchArguments[1..($patchArguments.Length - 1)] }
+    if ($Startup) { $patchArguments = @($patchArguments[0], '--startup', '--startup-payload', '.\startup_payload.dll') + $patchArguments[1..($patchArguments.Length - 1)] }
     # Windows PowerShell 5 treats redirected native stderr as ErrorRecords.
     # LIEF diagnostics must not terminate a successful native build mid-write.
     $savedErrorAction = $ErrorActionPreference

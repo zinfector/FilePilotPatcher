@@ -1191,18 +1191,77 @@ struct NativeRowCacheEntry {
     RECT bounds;
     NativeTextureResource resource;
     wchar_t text[kOverlayTextLimit + 1];
+    void *sharedView;
+    HANDLE sharedMapping;
+    SIZE_T allocationBytes;
+    unsigned long long frame;
 };
 
 static NativeRowCacheEntry g_nativeRowCache[kNativeRowCacheEntries];
+static SIZE_T g_rowBytes;
+static SIZE_T g_rowBudget = 8 * 1024 * 1024;
+static unsigned long long g_rowFrame = 1;
+static bool g_fontRowsStale;
+
+#include "shared_rows.h"
 
 static void ReleaseNativeRowEntry(NativeRowCacheEntry &entry) {
-    if (entry.resource.pixels)
+    if (entry.sharedView) {
+        SharedRows::unmapView(entry.sharedView);
+        SharedRows::closeHandle(entry.sharedMapping);
+    } else if (entry.resource.pixels)
         pVirtualFree()(entry.resource.pixels, 0, MEM_RELEASE);
+    if (entry.allocationBytes <= g_rowBytes) g_rowBytes -= entry.allocationBytes;
     // File Pilot owns the backend objects recorded in object/generation and
     // retires them through its normal per-frame resource cache. Clearing the
     // descriptor prevents a recycled cache slot from reusing the old identity.
     entry = {};
 }
+
+static int RowVictim() {
+    int oldest = -1;
+    for (unsigned i = 0; i < kNativeRowCacheEntries; ++i) {
+        if (!g_nativeRowCache[i].hash) return static_cast<int>(i);
+        // Resource descriptors referenced by this frame must remain stable.
+        if (g_nativeRowCache[i].frame == g_rowFrame) continue;
+        if (oldest < 0 || g_nativeRowCache[i].stamp < g_nativeRowCache[oldest].stamp) oldest = static_cast<int>(i);
+    }
+    return oldest;
+}
+
+static bool MakeRowRoom(SIZE_T bytes) {
+    if (bytes > SharedRows::kMaxPixels) return false;
+    while (g_rowBytes + bytes > g_rowBudget) {
+        int oldest = -1;
+        for (unsigned i = 0; i < kNativeRowCacheEntries; ++i)
+            if (g_nativeRowCache[i].hash && g_nativeRowCache[i].frame != g_rowFrame &&
+                (oldest < 0 || g_nativeRowCache[i].stamp < g_nativeRowCache[oldest].stamp)) oldest = static_cast<int>(i);
+        if (oldest < 0) return false;
+        ReleaseNativeRowEntry(g_nativeRowCache[oldest]);
+    }
+    return RowVictim() >= 0;
+}
+
+extern "C" __declspec(dllexport) void UnicodeCacheMaintenance(unsigned mode) {
+    if (mode == 3) {
+        ++g_rowFrame;
+        // An unoptimized build does not call this entry point; its cache keeps
+        // the previous eviction policy via the feature flag set by the patcher.
+        return;
+    }
+    if (mode == 2) {
+        if (SharedRows::Init()) _InterlockedIncrement(SharedRows::epoch);
+        g_fontRowsStale = true;
+        return;
+    }
+    if (mode == 1) g_rowBudget = 2 * 1024 * 1024;
+    else g_rowBudget = 8 * 1024 * 1024;
+    // Native unchanged-frame batches can retain descriptors indefinitely. Apply
+    // the reduced budget on the next cache insertion, never free pixels from a
+    // timer underneath a retained native batch.
+}
+
+extern "C" __declspec(dllexport) volatile unsigned int ResourceBudgetEnabled = 0;
 
 static void ReleaseGlyphAnalyses(IDWriteGlyphRunAnalysis **analyses) {
     for (unsigned int index = 0; index < kGlyphCacheRuns; ++index)
@@ -1212,6 +1271,17 @@ static void ReleaseGlyphAnalyses(IDWriteGlyphRunAnalysis **analyses) {
 static NativeRowCacheEntry *FindOrCreateNativeRow(
     const wchar_t *text, const OverlayPacket &packet) {
     float maximumWidth = static_cast<float>(packet.rectangle[2] - packet.rectangle[0]);
+    if (!ResourceBudgetEnabled) ++g_rowFrame;
+    if (ResourceBudgetEnabled && SharedRows::Init()) {
+        LONG epoch = _InterlockedCompareExchange(SharedRows::epoch, 0, 0);
+        if (epoch != SharedRows::seenEpoch || g_fontRowsStale) {
+            // Hash invalidation leaves native descriptors alive until eviction.
+            for (unsigned i = 0; i < kNativeRowCacheEntries; ++i)
+                if (g_nativeRowCache[i].hash) g_nativeRowCache[i].emSize = -1.0f;
+            for (unsigned i = 0; i < kGlyphCacheEntries; ++i) ReleaseGlyphEntry(g_glyphCache[i]);
+            SharedRows::seenEpoch = epoch; g_fontRowsStale = false;
+        }
+    }
     for (unsigned int index = 0; index < kNativeRowCacheEntries; ++index) {
         NativeRowCacheEntry &entry = g_nativeRowCache[index];
         if (entry.hash == packet.textHash && entry.textLength == packet.textLength &&
@@ -1219,11 +1289,37 @@ static NativeRowCacheEntry *FindOrCreateNativeRow(
             entry.fontFamily == packet.fontFamily &&
             SameText(entry.text, text, packet.textLength)) {
             entry.stamp = ++g_cacheStamp;
+            entry.frame = g_rowFrame;
             UnicodeExperiment.rowCacheHits++;
             return &entry;
         }
     }
     UnicodeExperiment.rowCacheMisses++;
+
+    if (ResourceBudgetEnabled) {
+        SharedRows::View shared = SharedRows::Open(text, packet, maximumWidth);
+        if (shared.header) {
+            SIZE_T bytes = (shared.header->bytes + sizeof(SharedRows::Header) + 4095) & ~SIZE_T(4095);
+            if (MakeRowRoom(bytes)) {
+                NativeRowCacheEntry &entry = g_nativeRowCache[RowVictim()];
+                ReleaseNativeRowEntry(entry);
+                entry.hash = packet.textHash; entry.stamp = ++g_cacheStamp;
+                entry.emSize = packet.emSize; entry.maximumWidth = maximumWidth;
+                entry.fontFamily = packet.fontFamily; entry.textLength = packet.textLength;
+                entry.layoutWidth = shared.header->layoutWidth; entry.layoutHeight = shared.header->layoutHeight;
+                entry.bounds = shared.header->bounds;
+                entry.resource.pixels = reinterpret_cast<unsigned char *>(shared.header + 1);
+                entry.resource.width = shared.header->width; entry.resource.height = shared.header->height;
+                entry.resource.arrayCount = 1; entry.resource.bytesPerPixel = 1; entry.resource.immutable = 1;
+                memcpy(entry.text, text, packet.textLength * 2); entry.text[packet.textLength] = 0;
+                entry.sharedView = shared.header; entry.sharedMapping = shared.mapping;
+                entry.allocationBytes = bytes; g_rowBytes += bytes;
+                entry.frame = g_rowFrame;
+                return &entry;
+            }
+            SharedRows::unmapView(shared.header); SharedRows::closeHandle(shared.mapping);
+        }
+    }
 
     GlyphCacheEntry *glyphs = FindOrCreateGlyphEntry(
         text, packet.textLength, packet, true);
@@ -1289,6 +1385,10 @@ static NativeRowCacheEntry *FindOrCreateNativeRow(
     unsigned int width = contentWidth + 2;
     unsigned int height = contentHeight + 2;
     SIZE_T coverageBytes = static_cast<SIZE_T>(width) * height;
+    SIZE_T accountedBytes = (coverageBytes + sizeof(SharedRows::Header) + 4095) & ~SIZE_T(4095);
+    if (ResourceBudgetEnabled && !MakeRowRoom(accountedBytes)) {
+        ReleaseGlyphAnalyses(analyses); return nullptr;
+    }
     auto coverage = static_cast<unsigned char *>(pVirtualAlloc()(
         nullptr, coverageBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     if (!coverage) {
@@ -1341,15 +1441,8 @@ static NativeRowCacheEntry *FindOrCreateNativeRow(
         return nullptr;
     }
 
-    unsigned int victim = 0;
-    for (unsigned int index = 1; index < kNativeRowCacheEntries; ++index) {
-        if (!g_nativeRowCache[index].hash) {
-            victim = index;
-            break;
-        }
-        if (g_nativeRowCache[index].stamp < g_nativeRowCache[victim].stamp)
-            victim = index;
-    }
+    int victim = RowVictim();
+    if (victim < 0) { pVirtualFree()(coverage, 0, MEM_RELEASE); return nullptr; }
     NativeRowCacheEntry &entry = g_nativeRowCache[victim];
     ReleaseNativeRowEntry(entry);
     entry.hash = packet.textHash;
@@ -1372,6 +1465,16 @@ static NativeRowCacheEntry *FindOrCreateNativeRow(
     entry.resource.immutable = 1;
     memcpy(entry.text, text, packet.textLength * sizeof(wchar_t));
     entry.text[packet.textLength] = 0;
+    entry.allocationBytes = accountedBytes; g_rowBytes += accountedBytes;
+    entry.frame = g_rowFrame;
+    if (ResourceBudgetEnabled) {
+        SharedRows::View shared = SharedRows::Publish(text, packet, maximumWidth, entry, static_cast<DWORD>(coverageBytes));
+        if (shared.header) {
+            pVirtualFree()(coverage, 0, MEM_RELEASE);
+            entry.sharedView = shared.header; entry.sharedMapping = shared.mapping;
+            entry.resource.pixels = reinterpret_cast<unsigned char *>(shared.header + 1);
+        }
+    }
     UnicodeExperiment.rowBuilds++;
     UnicodeExperiment.rowUploadBytes += coverageBytes;
     UnicodeExperiment.lastRowStatus = S_OK;
