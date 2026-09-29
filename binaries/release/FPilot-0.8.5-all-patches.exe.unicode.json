@@ -232,7 +232,7 @@
   "archives": {
     "profile": "File Pilot 0.8.5 x64",
     "engine_rva": "0x432000",
-    "startup_rva": "0x42e3f0",
+    "startup_rva": "0x42e500",
     "storage": "memory-only",
     "extraction_shortcut": "Ctrl+Shift+E",
     "engine": "7-Zip 26.03",
@@ -248,7 +248,7 @@
     "entry_rva": "0x5f2400",
     "runtime": "embedded; memory-only",
     "engine_rva": "0x5f6000",
-    "runtime_sha256": "a6b087a1cd7825a4667507079d56a8f915781a173ec73514b203d6c5d5cf3ba9",
+    "runtime_sha256": "cde4f29d85637f82d3296573b1476d03a441a2fa843cc2a76020f87fc976419a",
     "history": "100 process-session batches; move and recyclable delete",
     "status": "experimental; desktop keybinding and recycle recovery verification incomplete",
     "keys": {
