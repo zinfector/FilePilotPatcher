@@ -1141,8 +1141,10 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
           include_unicode: bool = False, unicode_payload_path: Path | None = None,
           include_menu: bool = False, menu_payload_path: Path | None = None,
           include_archives: bool = False, include_startup: bool = False,
-          startup_payload_path: Path | None = None):
+          startup_payload_path: Path | None = None, include_undo: bool = False):
     target = TargetImage(target_path)
+    if include_undo and target.digest != SHA256_085:
+        raise ValueError("undo history currently supports only the original 0.8.5 input")
     if include_startup and (target.digest != SHA256_085 or startup_payload_path is None):
         raise ValueError("startup optimization needs the original 0.8.5 input and --startup-payload")
     if include_tab and target.digest not in TAB_SUPPORTED_SHA256:
@@ -1314,6 +1316,13 @@ def patch(target_path: Path, payload_path: Path, output_path: Path,
             bytes(output), target.digest, patcher_dir / "archive_payload.dll",
             patcher_dir / "archive_bootstrap.dll")
         report["patches"]["archives"] = True
+    if include_undo:
+        from undo.patch import apply as apply_undo
+        undo_dir = Path(__file__).resolve().parent / "undo"
+        output, report["undo"] = apply_undo(
+            bytes(output), undo_dir / "bootstrap.dll", undo_dir / "FPilot.Undo.dll",
+            original_digest=target.digest)
+        report["patches"]["undo_redo"] = True
     if layout_path:
         layout_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
@@ -1363,7 +1372,7 @@ def main():
                         help="omit all tab patches and emit only Open File Location integration")
     parser.add_argument(
         "--all", action="store_true",
-        help="emit Open File Location, tabs, Unicode renderer, and native menu cache")
+        help="emit all patches: Open File Location, tabs, Unicode renderer, native menu cache, archives, startup, and undo history (0.8.5)")
     parser.add_argument("--unicode-payload", type=Path,
                         help="compiled unicode_payload.dll used with --all")
     parser.add_argument("--menu-payload", type=Path,
@@ -1373,6 +1382,8 @@ def main():
     parser.add_argument("--startup", action="store_true",
                         help="enable bounded warm launches and resource budgets (0.8.5)")
     parser.add_argument("--startup-payload", type=Path, help="compiled startup_payload.dll")
+    parser.add_argument("--undo", action="store_true",
+                        help="embed file-operation undo/redo history (0.8.5; experimental)")
     parser.add_argument("input", type=Path, help="unpatched File Pilot executable")
     parser.add_argument("payload", type=Path, nargs="?", help="compiled payload DLL")
     parser.add_argument("output", type=Path, nargs="?", help="patched standalone executable")
@@ -1393,9 +1404,12 @@ def main():
         parser.error("--all requires --unicode-payload")
     if include_menu and not args.menu_payload:
         parser.error("--all requires --menu-payload")
+    if (args.startup or args.all) and not args.startup_payload:
+        parser.error("--startup/--all requires --startup-payload")
     patch(args.input, args.payload, args.output, args.layout_json,
           not args.open_location_only, include_unicode, args.unicode_payload,
-          include_menu, args.menu_payload, args.archives, args.startup, args.startup_payload)
+          include_menu, args.menu_payload, args.archives or args.all, args.startup or args.all, args.startup_payload,
+          args.undo or args.all)
 
 
 if __name__ == "__main__":
