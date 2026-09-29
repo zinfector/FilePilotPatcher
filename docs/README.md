@@ -1,5 +1,7 @@
 # Research notes
 
+- [File-operation undo/redo design](filepilot-undo-redo-design.md) maps the 0.8.5
+  operation engine and proposes completion-based history with native keybindings.
 - `filepilot-combined-patch.md` summarizes the earlier combined patch flow.
 - `filepilot-tab-relative-fix.md` records the relative-placement correction.
 - `filepilot-tab-relative-placement-design.md` explains the placement design.

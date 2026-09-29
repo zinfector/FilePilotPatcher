@@ -6,11 +6,15 @@ param(
     [switch]$OpenLocationOnly,
     [switch]$All,
     [switch]$Archives,
-    [switch]$Startup
+    [switch]$Startup,
+    [switch]$Undo
 )
 
 $ErrorActionPreference = 'Stop'
 $includeUnicode = $All
+$includeUndo = $All -or $Undo
+$includeArchives = $All -or $Archives
+$includeStartup = $All -or $Startup
 if ($All -and $OpenLocationOnly) {
     throw '-All cannot be combined with -OpenLocationOnly'
 }
@@ -22,6 +26,9 @@ if ($Archives -and -not $PSBoundParameters.ContainsKey('OutputExe')) {
 }
 if ($Startup -and -not $PSBoundParameters.ContainsKey('OutputExe')) {
     $OutputExe = Join-Path $PSScriptRoot '..\binaries\release\FPilot-0.8.5-optimized.exe'
+}
+if ($Undo -and -not $All -and -not $Archives -and -not $Startup -and -not $PSBoundParameters.ContainsKey('OutputExe')) {
+    $OutputExe = Join-Path $PSScriptRoot '..\binaries\release\FPilot-0.8.5-undo.exe'
 }
 $invocationDirectory = (Get-Location).Path
 if (-not [System.IO.Path]::IsPathRooted($InputExe)) {
@@ -59,8 +66,10 @@ if (-not $PythonExe) {
         $pythonCandidates += $pythonCommand.Source
     }
     $userProfile = [Environment]::GetFolderPath('UserProfile')
-    $pythonCandidates += Join-Path $userProfile `
-        '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+    if ($userProfile) {
+        $pythonCandidates += Join-Path $userProfile `
+            '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+    }
     $PythonExe = $pythonCandidates |
         Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
         Select-Object -First 1
@@ -90,10 +99,13 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Menu payload build failed with exit code $LASTEXITCODE" }
     }
 
-    if ($Archives) {
+    if ($includeArchives) {
         & (Join-Path $PSScriptRoot 'archive\build.ps1') -VsDev $vsDev
     }
-    if ($Startup) {
+    if ($includeUndo) {
+        & (Join-Path $PSScriptRoot 'undo\build.ps1') -PayloadOnly
+    }
+    if ($includeStartup) {
         cmd.exe /d /c $compileStartup
         if ($LASTEXITCODE -ne 0) { throw "Startup payload build failed with exit code $LASTEXITCODE" }
     }
@@ -105,8 +117,9 @@ try {
             '--layout-json', $UnicodeReport) +
             $patchArguments[1..($patchArguments.Length - 1)]
     }
-    if ($Archives) { $patchArguments = @($patchArguments[0], '--archives') + $patchArguments[1..($patchArguments.Length - 1)] }
-    if ($Startup) { $patchArguments = @($patchArguments[0], '--startup', '--startup-payload', '.\startup_payload.dll') + $patchArguments[1..($patchArguments.Length - 1)] }
+    if ($includeArchives) { $patchArguments = @($patchArguments[0], '--archives') + $patchArguments[1..($patchArguments.Length - 1)] }
+    if ($includeUndo) { $patchArguments = @($patchArguments[0], '--undo') + $patchArguments[1..($patchArguments.Length - 1)] }
+    if ($includeStartup) { $patchArguments = @($patchArguments[0], '--startup', '--startup-payload', '.\startup_payload.dll') + $patchArguments[1..($patchArguments.Length - 1)] }
     # Windows PowerShell 5 treats redirected native stderr as ErrorRecords.
     # LIEF diagnostics must not terminate a successful native build mid-write.
     $savedErrorAction = $ErrorActionPreference

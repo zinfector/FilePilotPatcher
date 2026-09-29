@@ -276,3 +276,12 @@ surface calls, and captured insertion destinations.
 - No registry changes are made by the patcher itself. To replace an installed copy, close every
   File Pilot process, keep a backup, substitute the patched executable, and re-enable File Pilot's
   default-file-manager integration if its registered path changed.
+
+# Undo/redo
+
+For File Pilot 0.8.5, `build_patch.ps1 -All` includes archives, startup optimization,
+and shared undo/redo history; `-Undo` enables history separately. No adjacent undo
+DLL is required. Ctrl+Z undoes; Ctrl+Y or Ctrl+Shift+Z redoes. File-move drops are
+recorded in shared session history across FilePilot processes. Replay submits one
+Shell operation per batch. Close all FilePilot processes when upgrading.
+Runtime validation of the latest composition has not been performed.
