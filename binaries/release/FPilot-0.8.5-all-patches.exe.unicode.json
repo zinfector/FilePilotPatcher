@@ -245,10 +245,10 @@
   },
   "undo": {
     "original_entry_rva": "0x408c50",
-    "entry_rva": "0x5f2400",
+    "entry_rva": "0x5f3400",
     "runtime": "embedded; memory-only",
-    "engine_rva": "0x5f6000",
-    "runtime_sha256": "cde4f29d85637f82d3296573b1476d03a441a2fa843cc2a76020f87fc976419a",
+    "engine_rva": "0x5f7000",
+    "runtime_sha256": "7c57c80b14bdd1f5caef00579ccf0e2e1624407bcc2835b0638a5e057a4cc43f",
     "history": "100 process-session batches; move and recyclable delete",
     "status": "experimental; desktop keybinding and recycle recovery verification incomplete",
     "keys": {

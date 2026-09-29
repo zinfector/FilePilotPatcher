@@ -279,17 +279,52 @@ BOOL WINAPI info(HANDLE key,LPBY_HANDLE_FILE_INFORMATION data){auto h=lookup(key
 BOOL WINAPI changes(HANDLE key,LPVOID p,DWORD n,BOOL subtree,DWORD filter,LPDWORD returned,LPOVERLAPPED ov,LPOVERLAPPED_COMPLETION_ROUTINE callback){if(!lookup(key))return ReadDirectoryChangesW(key,p,n,subtree,filter,returned,ov,callback);if(returned)*returned=0;SetLastError(ERROR_NOT_SUPPORTED);return FALSE;}
 BOOL WINAPI exists(LPCWSTR p){return attributes(p)!=INVALID_FILE_ATTRIBUTES;}
 DWORD_PTR WINAPI shellInfo(LPCWSTR path,DWORD a,SHFILEINFOW* info,UINT size,UINT flags){
-    if((flags&(SHGFI_PIDL|SHGFI_USEFILEATTRIBUTES)) || !path || !archivePath(path))
+    if((flags&SHGFI_PIDL) || !path || !archivePath(path))
         return SHGetFileInfoW(path,a,info,size,flags);
+    constexpr UINT iconRequests=SHGFI_ICON|SHGFI_SYSICONINDEX|SHGFI_ICONLOCATION;
     DWORD physical=GetFileAttributesW(path);
     if(physical!=INVALID_FILE_ATTRIBUTES){
-        if(!(physical&FILE_ATTRIBUTE_DIRECTORY)&&extension(path))
-            return SHGetFileInfoW(path,physical|FILE_ATTRIBUTE_DIRECTORY,info,size,flags|SHGFI_USEFILEATTRIBUTES);
-        return SHGetFileInfoW(path,a,info,size,flags);
+        if((physical&FILE_ATTRIBUTE_DIRECTORY) || !extension(path))
+            return SHGetFileInfoW(path,a,info,size,flags);
+        if((flags&iconRequests) && info && size>=sizeof(*info)){
+            // Use the actual archive for Shell association, overlays and icon
+            // location, even if FilePilot supplied synthetic directory attributes.
+            UINT iconFlags=flags&~(SHGFI_USEFILEATTRIBUTES|SHGFI_DISPLAYNAME|SHGFI_TYPENAME|SHGFI_ATTRIBUTES|SHGFI_ATTR_SPECIFIED);
+            SHFILEINFOW icon{};
+            DWORD_PTR result=SHGetFileInfoW(path,physical,&icon,sizeof(icon),iconFlags);
+            if(!result)return result;
+            UINT other=flags&(SHGFI_DISPLAYNAME|SHGFI_TYPENAME|SHGFI_ATTRIBUTES);
+            if(other){
+                UINT otherFlags=other|(flags&SHGFI_ATTR_SPECIFIED);
+                // Attribute queries require a real item. Preserve the synthetic
+                // folder capability only in this metadata result, never in icons.
+                DWORD requested=info->dwAttributes;
+                if(other&SHGFI_ATTRIBUTES){
+                    SHGetFileInfoW(path,physical,info,size,otherFlags);
+                    if(!(flags&SHGFI_ATTR_SPECIFIED) || (requested&SFGAO_FOLDER))info->dwAttributes|=SFGAO_FOLDER;
+                }else SHGetFileInfoW(path,physical|FILE_ATTRIBUTE_DIRECTORY,info,size,otherFlags|SHGFI_USEFILEATTRIBUTES);
+            }
+            if(flags&SHGFI_ICON)info->hIcon=icon.hIcon;
+            info->iIcon=icon.iIcon;
+            if(flags&SHGFI_ICONLOCATION)memcpy(info->szDisplayName,icon.szDisplayName,sizeof(info->szDisplayName));
+            return result;
+        }
+        if(flags&SHGFI_USEFILEATTRIBUTES)return SHGetFileInfoW(path,a,info,size,flags);
+        return SHGetFileInfoW(path,physical|FILE_ATTRIBUTE_DIRECTORY,info,size,flags|SHGFI_USEFILEATTRIBUTES);
     }
+    if(flags&iconRequests){
+        // Virtual folders and files were indexed when their listing was opened.
+        // Binary-search that immutable index instead of opening an archive here.
+        bool directory=(a&FILE_ATTRIBUTE_DIRECTORY)!=0;
+        try{cachedDirectory(path,directory);}catch(...){}
+        DWORD attributes=directory?FILE_ATTRIBUTE_DIRECTORY:FILE_ATTRIBUTE_NORMAL;
+        return SHGetFileInfoW(path,attributes,info,size,flags|SHGFI_USEFILEATTRIBUTES);
+    }
+    if(flags&SHGFI_USEFILEATTRIBUTES)return SHGetFileInfoW(path,a,info,size,flags);
     try{Location loc;if(resolve(path,loc))return SHGetFileInfoW(path,attrs(loc.entry),info,size,flags|SHGFI_USEFILEATTRIBUTES);}catch(...){}
     return SHGetFileInfoW(path,a,info,size,flags);
 }
+
 BOOL WINAPI write(HANDLE h,LPCVOID p,DWORD n,LPDWORD done,LPOVERLAPPED ov){if(lookup(h)){if(done)*done=0;SetLastError(ERROR_WRITE_PROTECT);return FALSE;}return WriteFile(h,p,n,done,ov);}
 BOOL WINAPI remove(LPCWSTR p){try{Location loc;if(resolve(p,loc)&&!loc.inside.empty()){SetLastError(ERROR_WRITE_PROTECT);return FALSE;}}catch(...){}return DeleteFileW(p);}
 // FILE_*_DIR_INFORMATION layouts. File Pilot 0.8.5 uses class 60 (name at +88).
