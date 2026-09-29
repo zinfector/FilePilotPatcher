@@ -42,6 +42,8 @@ bool recycleMetadata(std::wstring_view path);
 // Lexical only: no allocation, filesystem access, or archive opening.
 bool archivePath(std::wstring_view path, bool includeLeaf = true);
 bool resolve(const wchar_t* path, Location& result);
+// Icon lookup only: consult an already indexed archive, without filesystem I/O.
+bool cachedDirectory(const wchar_t* path, bool& directory);
 std::vector<Entry> children(const Location& location);
 void extractDialog(HWND owner);
 }

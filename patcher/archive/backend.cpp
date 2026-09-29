@@ -268,6 +268,29 @@ void Archive::extract(const std::wstring& dest){
 static std::mutex archivesMutex;
 struct Cached {std::wstring path;FILETIME time;ULONGLONG size;std::shared_ptr<Archive> archive;};
 static std::vector<Cached> archives;
+bool cachedDirectory(const wchar_t* raw,bool& directory){
+    if(!raw || !archivePath(raw))return false;
+    std::wstring path=raw;std::replace(path.begin(),path.end(),L'/',L'\\');
+    while(path.size()>3 && path.back()==L'\\')path.pop_back();
+    auto key=lower(path);
+    std::shared_ptr<Archive> archive;size_t prefix=0;
+    {
+        std::lock_guard<std::mutex> lock(archivesMutex);
+        for(auto& cached:archives){
+            auto root=lower(cached.path);
+            if(key.size()>root.size() && key.compare(0,root.size(),root)==0 && key[root.size()]==L'\\'){
+                archive=cached.archive;prefix=root.size()+1;break;
+            }
+        }
+    }
+    if(!archive)return false;
+    auto inside=key.substr(prefix);
+    // Constructor emits entries in the lowercase tree's sorted order.
+    auto found=std::lower_bound(archive->entries.begin(),archive->entries.end(),inside,
+        [](const Entry& entry,const std::wstring& value){return lower(entry.path)<value;});
+    if(found==archive->entries.end() || lower(found->path)!=inside)return false;
+    directory=found->directory;return true;
+}
 bool resolve(const wchar_t* raw,Location& out){
     if(!raw || !archivePath(raw))return false;std::wstring path=raw;std::replace(path.begin(),path.end(),L'/',L'\\');
     while(path.size()>3 && path.back()==L'\\')path.pop_back();
