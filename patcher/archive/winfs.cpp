@@ -8,6 +8,7 @@
 #include <shlobj.h>
 #include <algorithm>
 #include <cstring>
+#include <set>
 
 namespace {
 using namespace fpa;
@@ -192,10 +193,11 @@ struct Handle {
 };
 std::mutex handlesMutex;
 std::map<HANDLE,std::shared_ptr<Handle>> handles;
+std::set<HANDLE> recycleFindHandles;
 std::shared_ptr<Handle> lookup(HANDLE h){std::lock_guard<std::mutex> lock(handlesMutex);auto i=handles.find(h);return i==handles.end()?nullptr:i->second;}
 HANDLE put(std::shared_ptr<Handle> h){HANDLE key=CreateEventW(nullptr,TRUE,FALSE,nullptr);if(!key)return INVALID_HANDLE_VALUE;std::lock_guard<std::mutex> lock(handlesMutex);handles[key]=h;return key;}
 DWORD attrs(const Entry& e){return FILE_ATTRIBUTE_READONLY|(e.directory?FILE_ATTRIBUTE_DIRECTORY:FILE_ATTRIBUTE_ARCHIVE);}
-void decorate(WIN32_FIND_DATAW* d){if(!(d->dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)&&extension(d->cFileName))d->dwFileAttributes|=FILE_ATTRIBUTE_DIRECTORY;}
+void decorate(WIN32_FIND_DATAW* d,bool recycle=false){if(!(recycle&&recycleMetadataName(d->cFileName))&&!(d->dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)&&extension(d->cFileName))d->dwFileAttributes|=FILE_ATTRIBUTE_DIRECTORY;}
 void fill(const Entry& e,WIN32_FIND_DATAW* d){
     memset(d,0,sizeof(*d));d->dwFileAttributes=attrs(e);d->ftCreationTime=d->ftLastAccessTime=d->ftLastWriteTime=e.time;
     d->nFileSizeLow=(DWORD)e.size;d->nFileSizeHigh=(DWORD)(e.size>>32);wcsncpy_s(d->cFileName,e.path.c_str(),_TRUNCATE);
@@ -229,11 +231,18 @@ HANDLE WINAPI create(LPCWSTR name,DWORD access,DWORD share,LPSECURITY_ATTRIBUTES
 BOOL WINAPI closeHandle(HANDLE key){
     {std::lock_guard<std::mutex> lock(handlesMutex);handles.erase(key);}return CloseHandle(key);
 }
-BOOL WINAPI findClose(HANDLE key){if(lookup(key))return closeHandle(key);return FindClose(key);}
+BOOL WINAPI findClose(HANDLE key){if(lookup(key))return closeHandle(key);{std::lock_guard<std::mutex> lock(handlesMutex);recycleFindHandles.erase(key);}return FindClose(key);}
 HANDLE WINAPI firstEx(LPCWSTR raw,FINDEX_INFO_LEVELS level,LPVOID data,FINDEX_SEARCH_OPS op,LPVOID filter,DWORD flags){
     // Existing filesystem entries (including archive files) need no archive index.
     HANDLE real=FindFirstFileExW(raw,level,data,op,filter,flags);
-    if(real!=INVALID_HANDLE_VALUE){decorate((WIN32_FIND_DATAW*)data);return real;}
+    if(real!=INVALID_HANDLE_VALUE){
+        bool recycle=raw&&recyclePath(raw);
+        if(recycle){
+            try{std::lock_guard<std::mutex> lock(handlesMutex);recycleFindHandles.insert(real);}
+            catch(...){FindClose(real);SetLastError(ERROR_NOT_ENOUGH_MEMORY);return INVALID_HANDLE_VALUE;}
+        }
+        decorate((WIN32_FIND_DATAW*)data,recycle);return real;
+    }
     if(!raw || !archivePath(raw))return real;
     DWORD nativeError=GetLastError();
     try{std::wstring path=raw;auto slash=path.find_last_of(L"\\/");Location loc;
@@ -250,7 +259,7 @@ HANDLE WINAPI firstEx(LPCWSTR raw,FINDEX_INFO_LEVELS level,LPVOID data,FINDEX_SE
     SetLastError(nativeError);return INVALID_HANDLE_VALUE;
 }
 HANDLE WINAPI first(LPCWSTR p,LPWIN32_FIND_DATAW d){return firstEx(p,FindExInfoStandard,d,FindExSearchNameMatch,nullptr,0);}
-BOOL WINAPI findNext(HANDLE key,LPWIN32_FIND_DATAW d){auto h=lookup(key);if(h){std::lock_guard<std::mutex> lock(h->mutex);return next(*h,d);}BOOL ok=FindNextFileW(key,d);if(ok)decorate(d);return ok;}
+BOOL WINAPI findNext(HANDLE key,LPWIN32_FIND_DATAW d){auto h=lookup(key);if(h){std::lock_guard<std::mutex> lock(h->mutex);return next(*h,d);}BOOL ok=FindNextFileW(key,d);if(ok){bool recycle;{std::lock_guard<std::mutex> lock(handlesMutex);recycle=recycleFindHandles.count(key)!=0;}decorate(d,recycle);}return ok;}
 BOOL WINAPI read(HANDLE key,LPVOID p,DWORD n,LPDWORD done,LPOVERLAPPED ov){
     auto h=lookup(key);if(!h)return ReadFile(key,p,n,done,ov);
     if(done)*done=0;
@@ -285,9 +294,29 @@ BOOL WINAPI write(HANDLE h,LPCVOID p,DWORD n,LPDWORD done,LPOVERLAPPED ov){if(lo
 BOOL WINAPI remove(LPCWSTR p){try{Location loc;if(resolve(p,loc)&&!loc.inside.empty()){SetLastError(ERROR_WRITE_PROTECT);return FALSE;}}catch(...){}return DeleteFileW(p);}
 // FILE_*_DIR_INFORMATION layouts. File Pilot 0.8.5 uses class 60 (name at +88).
 unsigned nameOffset(unsigned cls){switch(cls){case 1:return 64;case 2:return 68;case 3:return 94;case 12:return 12;case 37:return 104;case 38:return 80;case 60:return 88;case 63:return 114;default:return 0;}}
-void decorateNt(void* buffer,ULONG bytes,unsigned cls){unsigned off=nameOffset(cls);if(!off || cls==12)return;auto p=(BYTE*)buffer;ULONG pos=0;while(pos+off<=bytes){ULONG len=*(ULONG*)(p+pos+60);if(len>bytes-pos-off)break;DWORD& a=*(DWORD*)(p+pos+56);if(!(a&FILE_ATTRIBUTE_DIRECTORY)&&extension(std::wstring_view((wchar_t*)(p+pos+off),len/2)))a|=FILE_ATTRIBUTE_DIRECTORY;ULONG next=*(ULONG*)(p+pos);if(!next || next>bytes-pos)break;pos+=next;}}
+void decorateNt(HANDLE directory,void* buffer,ULONG bytes,unsigned cls){
+    unsigned off=nameOffset(cls);if(!off || cls==12)return;
+    auto p=(BYTE*)buffer;ULONG pos=0;
+    bool checked=false,recycle=false;
+    while(pos+off<=bytes){
+        ULONG len=*(ULONG*)(p+pos+60);if(len>bytes-pos-off)break;
+        auto name=std::wstring_view((wchar_t*)(p+pos+off),len/2);
+        bool metadata=recycleMetadataName(name);
+        if(metadata&&!checked){
+            // Only metadata-looking names need the directory context. Ordinary
+            // listings perform no extra path query or archive-header reads.
+            DWORD saved=GetLastError();wchar_t path[1024];
+            DWORD n=GetFinalPathNameByHandleW(directory,path,1024,FILE_NAME_NORMALIZED);
+            recycle=!n || n>=1024 || recyclePath(std::wstring_view(path,n));
+            checked=true;SetLastError(saved);
+        }
+        DWORD& a=*(DWORD*)(p+pos+56);
+        if(!(metadata&&recycle)&&!(a&FILE_ATTRIBUTE_DIRECTORY)&&extension(name))a|=FILE_ATTRIBUTE_DIRECTORY;
+        ULONG next=*(ULONG*)(p+pos);if(!next || next>bytes-pos)break;pos+=next;
+    }
+}
 NTSTATUS NTAPI query(HANDLE key,HANDLE event,PIO_APC_ROUTINE apc,PVOID context,PIO_STATUS_BLOCK ios,PVOID buffer,ULONG length,FILE_INFORMATION_CLASS cls,BOOLEAN single,PUNICODE_STRING pattern,BOOLEAN restart){
-    auto h=lookup(key);if(!h){auto status=ntQuery(key,event,apc,context,ios,buffer,length,cls,single,pattern,restart);if(status==0)decorateNt(buffer,(ULONG)ios->Information,(unsigned)cls);return status;}
+    auto h=lookup(key);if(!h){auto status=ntQuery(key,event,apc,context,ios,buffer,length,cls,single,pattern,restart);if(status==0)decorateNt(key,buffer,(ULONG)ios->Information,(unsigned)cls);return status;}
     unsigned off=nameOffset((unsigned)cls);NTSTATUS status=0;
     std::lock_guard<std::mutex> lock(h->mutex);if(restart)h->cursor=0;if(pattern)h->pattern.assign(pattern->Buffer,pattern->Length/2);
     ULONG used=0,last=0;bool any=false;

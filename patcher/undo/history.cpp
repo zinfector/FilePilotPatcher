@@ -7,6 +7,7 @@
 #include <sherrors.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <mutex>
@@ -73,24 +74,35 @@ static std::vector<BYTE> pidlOf(IShellItem* item) {
     if(!item || FAILED(SHGetIDListFromObject(item,&p))) return {};
     std::vector<BYTE> result((BYTE*)p,(BYTE*)p+ILGetSize(p)); CoTaskMemFree(p); return result;
 }
-static ComPtr<IShellItem> recycledIdentity(const Identity& id) {
-    ComPtr<IShellItem> bin,match;
-    auto hr=SHGetKnownFolderItem(FOLDERID_RecycleBinFolder,KF_FLAG_DEFAULT,nullptr,IID_PPV_ARGS(&bin));
-    trace(L"bin hr="+std::to_wstring((unsigned)hr)+L" sourceid="+std::to_wstring(id.low)+L" valid="+std::to_wstring(id.valid));
-    if(!id.valid || FAILED(hr)) return match;
+static std::vector<ComPtr<IShellItem>> recycledIdentities(const std::vector<Identity>& identities) {
+    using Key=std::array<DWORD,5>;
+    auto key=[](const Identity& id){return Key{id.volume,id.high,id.low,id.createdHigh,id.createdLow};};
+    struct Match {ComPtr<IShellItem> item;unsigned count=0;};
+    std::map<Key,Match> wanted;
+    for(const auto& id:identities)if(id.valid)wanted.emplace(key(id),Match{});
+    std::vector<ComPtr<IShellItem>> result(identities.size());
+    if(wanted.empty())return result;
+    ComPtr<IShellItem> bin;
+    if(FAILED(SHGetKnownFolderItem(FOLDERID_RecycleBinFolder,KF_FLAG_DEFAULT,nullptr,IID_PPV_ARGS(&bin))))return result;
     ComPtr<IEnumShellItems> items;
-    hr=bin->BindToHandler(nullptr,BHID_EnumItems,IID_PPV_ARGS(&items));trace(L"enum hr="+std::to_wstring((unsigned)hr));if(FAILED(hr))return match;
+    if(FAILED(bin->BindToHandler(nullptr,BHID_EnumItems,IID_PPV_ARGS(&items))))return result;
     for(unsigned n=0;n<100000;++n) {
         ComPtr<IShellItem> item;
-        auto next=items->Next(1,&item,nullptr);
-        if(next==S_FALSE)return match;
-        if(next!=S_OK)return {};
-        if(identify(pathOf(item.Get()))==id) {
-            if(match) return {}; // Never choose between ambiguous hard-link identities.
-            match=item;
+        HRESULT next=items->Next(1,&item,nullptr);
+        if(next==S_FALSE) {
+            for(size_t i=0;i<identities.size();++i)if(identities[i].valid) {
+                auto found=wanted.find(key(identities[i]));
+                if(found!=wanted.end() && found->second.count==1)result[i]=found->second.item;
+            }
+            return result;
         }
+        if(next!=S_OK)return result;
+        auto id=identify(pathOf(item.Get()));
+        if(!id.valid)continue;
+        auto found=wanted.find(key(id));
+        if(found!=wanted.end()) {++found->second.count;found->second.item=item;}
     }
-    return {}; // Enumeration limit reached without establishing uniqueness.
+    return result; // Do not select matches without establishing uniqueness.
 }
 struct Item {
     std::wstring original,current;
@@ -123,13 +135,7 @@ static void error(const std::wstring& text) { std::lock_guard lock(stateMutex); 
 #include "shared_history.h"
 static void publish(Batch batch) {
     if(batch.items.empty() && batch.barrier.empty()) return;
-    std::lock_guard lock(stateMutex);
-    sharedHistory::Lock shared;
-    if(!shared.acquired || !sharedHistory::load())return;
-    ++generation;
-    redoStack.clear(); undoStack.push_back(std::move(batch));
-    if(undoStack.size()>100) undoStack.erase(undoStack.begin());
-    sharedHistory::save();
+    sharedHistory::append(std::move(batch));
 }
 static void barrier(const wchar_t* reason) { Batch b; b.barrier=reason; publish(std::move(b)); }
 
@@ -195,11 +201,16 @@ public:
         records.reserve(ctx.sources.size());
     }
     void finalize() {
-        for(auto& p:unresolvedDeletes) {
-            auto item=recycledIdentity(p.before);
+        std::vector<Identity> deletedIdentities;
+        deletedIdentities.reserve(unresolvedDeletes.size());
+        for(const auto& pendingDelete:unresolvedDeletes)deletedIdentities.push_back(pendingDelete.before);
+        auto recycled=recycledIdentities(deletedIdentities);
+        for(size_t n=0;n<unresolvedDeletes.size();++n) {
+            auto& p=unresolvedDeletes[n];
+            auto& item=recycled[n];
             if(!item || exists(p.path)) {unsafe=true;reason=L"The deleted item could not be identified in the Recycle Bin.";continue;}
             Item record;record.original=p.path;record.current=pathOf(item.Get());
-            record.identity=identify(record.current);record.recycle=pidlOf(item.Get());record.deleted=true;
+            record.identity=p.before;record.recycle=pidlOf(item.Get());record.deleted=true;
             if(record.recycle.empty()) {unsafe=true;reason=L"Recycle item identity unavailable.";}
             records.push_back(std::move(record));
         }
@@ -326,21 +337,25 @@ struct DragMove {
     std::wstring destination;
     HWND owner=nullptr;
 };
-static HRESULT runDragMove(IDataObject* data,const DragMove& move) noexcept {
+static HRESULT runDragMove(const DragMove& move,bool& moved) noexcept {
     HRESULT hr=E_FAIL;
-    bool began=false,moved=false;
+    bool began=false;
+    moved=false;
     try {
         std::shared_lock<std::shared_mutex> admission(execution);
         sharedHistory::Activity activity;
         ComPtr<IFileOperation> operation;
         ComPtr<IShellItem> destination;
-        ComPtr<IShellItemArray> sources;
         hr=SHCreateItemFromParsingName(move.destination.c_str(),nullptr,IID_PPV_ARGS(&destination));
-        if(SUCCEEDED(hr))hr=SHCreateShellItemArrayFromDataObject(data,IID_PPV_ARGS(&sources));
         if(SUCCEEDED(hr))hr=CoCreateInstance(CLSID_FileOperation,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&operation));
         if(SUCCEEDED(hr))hr=operation->SetOperationFlags(FOF_ALLOWUNDO|FOF_NOCONFIRMMKDIR);
         if(SUCCEEDED(hr))hr=operation->SetOwnerWindow(move.owner);
-        if(SUCCEEDED(hr))hr=operation->MoveItems(sources.Get(),destination.Get());
+        if(SUCCEEDED(hr))for(const auto& path:move.context.sources) {
+            ComPtr<IShellItem> source;
+            hr=SHCreateItemFromParsingName(path.c_str(),nullptr,IID_PPV_ARGS(&source));
+            if(SUCCEEDED(hr))hr=operation->MoveItem(source.Get(),destination.Get(),nullptr,nullptr);
+            if(FAILED(hr))break;
+        }
         if(SUCCEEDED(hr)) {
             Context context=move.context;
             Batch batch;
@@ -356,10 +371,6 @@ static HRESULT runDragMove(IDataObject* data,const DragMove& move) noexcept {
             try {barrier(L"A dragged move could not be fully recorded.");} catch(...) {}
         }
     }
-    // We perform the source removal ourselves. Never ask the drag source to
-    // delete originals again, including after cancellation or partial success.
-    dropEffect(data,CFSTR_PERFORMEDDROPEFFECT,DROPEFFECT_NONE);
-    dropEffect(data,CFSTR_LOGICALPERFORMEDDROPEFFECT,moved?DROPEFFECT_MOVE:DROPEFFECT_NONE);
     if(FAILED(hr) && hr!=HRESULT_FROM_WIN32(ERROR_CANCELLED) && hr!=COPYENGINE_E_USER_CANCELLED)
         MessageBoxW(move.owner,L"Windows could not complete the dragged move. Completed items, if any, are retained in file history.",L"File Pilot move",MB_OK|MB_ICONINFORMATION);
     return hr;
@@ -381,77 +392,98 @@ static HRESULT STDMETHODCALLTYPE dragDropHook(IDropTarget* target,IDataObject* d
         move.owner=*(HWND*)(drag+0x50);
         move.context.kind=1;
         if(move.destination.empty())return target->Drop(data,keys,point,effect);
-        ComPtr<IShellItem> destination;
-        ComPtr<IShellItemArray> sources;
-        SFGAOF attributes=0;
-        if(FAILED(SHCreateItemFromParsingName(move.destination.c_str(),nullptr,IID_PPV_ARGS(&destination))) ||
-           FAILED(destination->GetAttributes(SFGAO_FILESYSTEM|SFGAO_FOLDER,&attributes)) ||
-           (attributes&(SFGAO_FILESYSTEM|SFGAO_FOLDER))!=(SFGAO_FILESYSTEM|SFGAO_FOLDER) ||
-           FAILED(SHCreateShellItemArrayFromDataObject(data,IID_PPV_ARGS(&sources))))
+        DWORD attributes=GetFileAttributesW(move.destination.c_str());
+        if(attributes==INVALID_FILE_ATTRIBUTES || !(attributes&FILE_ATTRIBUTE_DIRECTORY))
             return target->Drop(data,keys,point,effect);
-        DWORD count=0;
-        if(FAILED(sources->GetCount(&count)) || !count)return target->Drop(data,keys,point,effect);
-        move.context.sources.reserve(count);
-        for(DWORD i=0;i<count;++i) {
-            ComPtr<IShellItem> item;
-            if(FAILED(sources->GetItemAt(i,&item)))return target->Drop(data,keys,point,effect);
-            auto path=pathOf(item.Get());
-            if(path.empty())return target->Drop(data,keys,point,effect);
-            move.context.sources.push_back(std::move(path));
-        }
-        // Use Shell's asynchronous data-transfer contract where the source supports
-        // it. Marshal COM interfaces instead of sharing apartment-bound pointers.
-        ComPtr<IDataObjectAsyncCapability> async;
-        BOOL asynchronous=FALSE;
-        if(SUCCEEDED(data->QueryInterface(IID_PPV_ARGS(&async))) &&
-           SUCCEEDED(async->GetAsyncMode(&asynchronous)) && asynchronous) {
-            ComPtr<IStream> stream;
-            if(SUCCEEDED(CoMarshalInterThreadInterfaceInStream(IID_IDataObject,data,&stream)) &&
-               SUCCEEDED(async->StartOperation(nullptr))) {
-                ++active;
-                try {
-                    // Keep stream owned on this thread until std::thread succeeds.
-                    IStream* marshaled=stream.Get();
-                    auto transfer=std::make_shared<DragMove>(std::move(move));
-                    std::thread worker([marshaled,transfer] {
-                        HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
-                        ComPtr<IDataObject> source;
-                        HRESULT hr=init;
-                        if(SUCCEEDED(init))hr=CoGetInterfaceAndReleaseStream(marshaled,IID_PPV_ARGS(&source));
-                        else marshaled->Release();
-                        if(source) {
-                            hr=runDragMove(source.Get(),*transfer);
-                            ComPtr<IDataObjectAsyncCapability> completion;
-                            if(SUCCEEDED(source.As(&completion)))completion->EndOperation(hr,nullptr,DROPEFFECT_NONE);
-                        }
-                        source.Reset();
-                        --active;
-                        if(SUCCEEDED(init))CoUninitialize();
-                    });
-                    stream.Detach();
-                    worker.detach();
-                    owned=true;
-                    target->DragLeave();
-                    *effect=DROPEFFECT_NONE;
-                    return S_OK;
-                } catch(...) {
-                    --active;
-                    async->EndOperation(E_OUTOFMEMORY,nullptr,DROPEFFECT_NONE);
-                    // move may have been consumed by the failed thread construction;
-                    // the original Shell target still owns the untouched drag data.
-                    if(stream)CoReleaseMarshalData(stream.Get());
-                    return target->Drop(data,keys,point,effect);
-                }
+        FORMATETC format{CF_HDROP,nullptr,DVASPECT_CONTENT,-1,TYMED_HGLOBAL};
+        STGMEDIUM medium{};
+        if(SUCCEEDED(data->GetData(&format,&medium))) {
+            struct Release {STGMEDIUM* value;~Release(){ReleaseStgMedium(value);}} release{&medium};
+            if(medium.tymed!=TYMED_HGLOBAL || !medium.hGlobal)return target->Drop(data,keys,point,effect);
+            auto drop=(HDROP)medium.hGlobal;
+            UINT count=DragQueryFileW(drop,0xFFFFFFFF,nullptr,0);
+            if(!count)return target->Drop(data,keys,point,effect);
+            move.context.sources.reserve(count);
+            for(UINT n=0;n<count;++n) {
+                UINT length=DragQueryFileW(drop,n,nullptr,0);
+                if(!length)return target->Drop(data,keys,point,effect);
+                std::wstring path(size_t(length)+1,L'\0');
+                if(DragQueryFileW(drop,n,path.data(),length+1)!=length)return target->Drop(data,keys,point,effect);
+                path.resize(length);move.context.sources.push_back(std::move(path));
             }
-            if(stream)CoReleaseMarshalData(stream.Get());
+        } else {
+            // Some filesystem sources expose only Shell IDs. Resolve those once
+            // here; all later worker setup uses the captured paths.
+            ComPtr<IShellItemArray> sources;
+            if(FAILED(SHCreateShellItemArrayFromDataObject(data,IID_PPV_ARGS(&sources))))
+                return target->Drop(data,keys,point,effect);
+            DWORD count=0;
+            if(FAILED(sources->GetCount(&count)) || !count)return target->Drop(data,keys,point,effect);
+            move.context.sources.reserve(count);
+            for(DWORD i=0;i<count;++i) {
+                ComPtr<IShellItem> item;
+                if(FAILED(sources->GetItemAt(i,&item)))return target->Drop(data,keys,point,effect);
+                auto path=pathOf(item.Get());
+                if(path.empty())return target->Drop(data,keys,point,effect);
+                move.context.sources.push_back(std::move(path));
+            }
         }
-        owned=true;
-        target->DragLeave();
+        // All filesystem paths are owned now. The worker reconstructs Shell
+        // objects in its own apartment; it never fetches source data again.
+        ComPtr<IDataObjectAsyncCapability> async;
+        ComPtr<IStream> stream;
+        bool started=false;
+        if(SUCCEEDED(data->QueryInterface(IID_PPV_ARGS(&async)))) {
+            BOOL enabled=FALSE;
+            if(SUCCEEDED(async->SetAsyncMode(TRUE)) &&
+               SUCCEEDED(async->GetAsyncMode(&enabled)) && enabled &&
+               SUCCEEDED(CoMarshalInterThreadInterfaceInStream(IID_IDataObjectAsyncCapability,async.Get(),&stream))) {
+                started=SUCCEEDED(async->StartOperation(nullptr));
+            }
+            if(!started && stream){CoReleaseMarshalData(stream.Get());stream.Reset();}
+        }
         ++active;
-        HRESULT hr=runDragMove(data,move);
-        --active;
+        try {
+            auto transfer=std::make_shared<DragMove>(std::move(move));
+            IStream* marshaled=stream.Get();
+            std::thread worker([transfer,marshaled] {
+                HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+                HRESULT hr=init;bool moved=false;
+                if(SUCCEEDED(init))hr=runDragMove(*transfer,moved);
+                --active;
+                if(marshaled) {
+                    if(SUCCEEDED(init)) {
+                        ComPtr<IDataObjectAsyncCapability> completion;
+                        HRESULT unmarshal=CoGetInterfaceAndReleaseStream(marshaled,IID_PPV_ARGS(&completion));
+                        if(SUCCEEDED(unmarshal)) {
+                            ComPtr<IDataObject> source;
+                            if(SUCCEEDED(completion.As(&source))) {
+                                dropEffect(source.Get(),CFSTR_PERFORMEDDROPEFFECT,DROPEFFECT_NONE);
+                                dropEffect(source.Get(),CFSTR_LOGICALPERFORMEDDROPEFFECT,moved?DROPEFFECT_MOVE:DROPEFFECT_NONE);
+                            }
+                            completion->EndOperation(hr,nullptr,DROPEFFECT_NONE);
+                        }
+                    } else marshaled->Release();
+                }
+                if(SUCCEEDED(init))CoUninitialize();
+            });
+            stream.Detach();worker.detach();owned=true;
+        } catch(...) {
+            --active;
+            if(started)async->EndOperation(E_OUTOFMEMORY,nullptr,DROPEFFECT_NONE);
+            if(stream)CoReleaseMarshalData(stream.Get());
+            return target->Drop(data,keys,point,effect);
+        }
+        // The patch owns source removal, including for synchronous data sources.
+        // Returning NONE prevents the source from performing a second deletion.
+        // No data-object lifetime or async capability is needed for worker paths.
+        if(!started) {
+            dropEffect(data,CFSTR_PERFORMEDDROPEFFECT,DROPEFFECT_NONE);
+            dropEffect(data,CFSTR_LOGICALPERFORMEDDROPEFFECT,DROPEFFECT_NONE);
+        }
+        target->DragLeave();
         *effect=DROPEFFECT_NONE;
-        return hr;
+        return S_OK;
     } catch(...) {
         if(!owned)return target->Drop(data,keys,point,effect);
         if(effect)*effect=DROPEFFECT_NONE;
@@ -491,7 +523,7 @@ static bool replayBatch(Batch& batch,bool undo) {
         else {
             // Ordinary move records exchange their endpoints after either direction.
             const auto& target=item.original;
-            if(!destinations.insert(normalizedPath(target)).second || exists(target)) {
+            if(!destinations.insert(normalizedPath(target)).second) {
                 error(L"A destination name is occupied. Nothing was overwritten.");return false;
             }
             auto parent=fs::path(target).parent_path().wstring();
@@ -507,9 +539,8 @@ static bool replayBatch(Batch& batch,bool undo) {
         context.sources.push_back(item.current);
     }
     if(indices.empty())return true;
-    // Every request is queued before the one execution call. A crash from this
-    // point leaves shared history dirty, so another process cannot repeat it.
-    sharedHistory::header->dirty=1;
+    // All requests execute once. The reservation owner protects partial replay
+    // without holding the shared mutex during filesystem or Shell work.
     Batch outcome;
     hr=observed(operation.Get(),context,outcome);
     size_t completed=0;
@@ -536,34 +567,24 @@ static bool replayBatch(Batch& batch,bool undo) {
 }
 static bool replay(bool undo,unsigned long long expectedGeneration=~0ULL) {
     std::unique_lock<std::shared_mutex> serial(execution);
-    sharedHistory::Lock shared;
-    if(!shared.acquired){error(L"Shared history is unavailable.");return false;}
-    if(sharedHistory::busy()){error(L"A file operation is still running in another window.");return false;}
-    Batch batch;
-    {
-        std::lock_guard lock(stateMutex);
-        if(!sharedHistory::load())return false;
-        if(poisoned) {lastError=L"History recording failed. Restart File Pilot before recording more history.";return false;}
-        if(expectedGeneration!=~0ULL && generation!=expectedGeneration) {lastError=L"Another operation completed before undo could start. Please try again.";return false;}
-        auto& stack=undo?undoStack:redoStack;
-        if(stack.empty()) {lastError=L"No file operation to undo or redo.";return false;}
-        if(!stack.back().barrier.empty()) {lastError=stack.back().barrier;return false;}
-        batch=stack.back(); lastError.clear();
+    sharedHistory::Reservation reservation;
+    std::vector<BYTE> bytes;
+    if(!reservation.take(undo,expectedGeneration,bytes))return false;
+    Batch batch=sharedHistory::decode(bytes);
+    bool success=false;
+    if(poisoned)error(L"History recording failed. Restart File Pilot before recording more history.");
+    else if(!batch.barrier.empty())error(batch.barrier);
+    else {
+        {std::lock_guard lock(stateMutex);lastError.clear();}
+        success=replayBatch(batch,undo);
     }
-    bool success=replayBatch(batch,undo);
-    {
+    if(!success) {
         std::lock_guard lock(stateMutex);
-        auto& from=undo?undoStack:redoStack; auto& to=undo?redoStack:undoStack;
-        ++generation;
-        if(success) {from.pop_back();to.push_back(std::move(batch));}
-        else {
-            if(lastError.empty()) lastError=L"Windows could not complete the operation. Check the item and its destination.";
-            // Preserve per-item state but do not allow traversal over an ambiguous partial replay.
-            batch.barrier=lastError; from.back()=std::move(batch);
-        }
-        if(!sharedHistory::save())success=false;
+        if(lastError.empty())lastError=L"Windows could not complete the operation. Check the item and its destination.";
+        batch.barrier=lastError;
     }
-    return success;
+    auto updated=sharedHistory::encode(std::move(batch));
+    return reservation.commit(undo,success,updated) && success;
 }
 static bool available(bool undo) {
     if(active || replayPending)return false;
@@ -576,7 +597,7 @@ static bool available(bool undo) {
 static void queueReplay(bool undo) {
     if(active || replayPending.exchange(true))return;
     unsigned long long expected;
-    {sharedHistory::Lock shared;if(!shared.acquired){replayPending=false;return;}expected=sharedHistory::header->generation;}
+    {sharedHistory::Lock shared(0);if(!shared.acquired){replayPending=false;return;}expected=sharedHistory::header->generation;}
     try {
         std::thread([undo,expected]{
             HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);

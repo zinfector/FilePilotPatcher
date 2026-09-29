@@ -1,24 +1,39 @@
-// Included inside namespace history after the process-local state declarations.
+// Shared batch arena: only the affected batch is copied or rewritten.
 namespace sharedHistory {
 constexpr size_t capacity=32*1024*1024;
-constexpr DWORD version=0x554e4404;
+constexpr DWORD version=0x554e4405;
+constexpr DWORD pageSize=4096,pageCount=(DWORD)(capacity/pageSize),noPage=~0UL;
 struct Participant {DWORD pid,count;};
+struct Slot {DWORD first,bytes;};
 struct Header {
-    DWORD magic,bytes,dirty,blocked,undoCount,redoCount;
+    DWORD magic,dirty,blocked,undoCount,redoCount,replayPid;
     unsigned long long generation;
     Participant participants[64];
+    DWORD undo[100],redo[100];
+    Slot slots[100];
+    DWORD freePage,next[pageCount];
 };
-static HANDLE mutex=nullptr,mapping=nullptr;
+static HANDLE mutex=nullptr,mapping=nullptr,idle=nullptr;
 static Header* header=nullptr;
+static bool dead(DWORD pid) {
+    HANDLE process=OpenProcess(SYNCHRONIZE,FALSE,pid);
+    bool result=process?WaitForSingleObject(process,0)==WAIT_OBJECT_0:GetLastError()==ERROR_INVALID_PARAMETER;
+    if(process)CloseHandle(process);
+    return result;
+}
 struct Lock {
     bool acquired=false;
     explicit Lock(DWORD timeout=INFINITE) {
         if(!header)return;
         DWORD result=WaitForSingleObject(mutex,timeout);
         acquired=result==WAIT_OBJECT_0 || result==WAIT_ABANDONED;
-        if(acquired && (result==WAIT_ABANDONED || header->dirty)) {
-            // A process may have died after moving files but before committing history.
-            header->blocked=1;header->dirty=0;++header->generation;
+        if(acquired) {
+            if(result==WAIT_ABANDONED || header->dirty) {
+                header->blocked=1;header->dirty=0;++header->generation;
+            }
+            if(header->replayPid && dead(header->replayPid)) {
+                header->blocked=1;header->replayPid=0;++header->generation;SetEvent(idle);
+            }
         }
     }
     ~Lock(){if(acquired)ReleaseMutex(mutex);}
@@ -28,23 +43,25 @@ static bool initialize() {
     if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token))return false;
     DWORD size=0;GetTokenInformation(token,TokenUser,nullptr,0,&size);
     std::vector<BYTE> buffer(size);
-    BOOL ok=GetTokenInformation(token,TokenUser,buffer.data(),size,&size);
-    CloseHandle(token);
+    BOOL ok=GetTokenInformation(token,TokenUser,buffer.data(),size,&size);CloseHandle(token);
     LPWSTR sid=nullptr;
     if(!ok || !ConvertSidToStringSidW(((TOKEN_USER*)buffer.data())->User.Sid,&sid))return false;
-    std::wstring name=L"Local\\FilePilot085.Undo.v4.";name+=sid;LocalFree(sid);
+    std::wstring name=L"Local\\FilePilot085.Undo.v5.";name+=sid;LocalFree(sid);
     mutex=CreateMutexW(nullptr,FALSE,(name+L".Lock").c_str());
-    if(!mutex)return false;
+    idle=CreateEventW(nullptr,TRUE,TRUE,(name+L".Idle").c_str());
+    if(!mutex || !idle)return false;
     DWORD wait=WaitForSingleObject(mutex,INFINITE);
     if(wait!=WAIT_OBJECT_0 && wait!=WAIT_ABANDONED)return false;
     mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,(DWORD)(sizeof(Header)+capacity),(name+L".State").c_str());
     if(mapping)header=(Header*)MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,0);
     if(header && header->magic!=version) {
-        memset(header,0,sizeof(Header));header->magic=version;
+        memset(header,0,sizeof(Header));
+        for(DWORD n=0;n<pageCount;++n)header->next[n]=n+1;
+        header->next[pageCount-1]=noPage;
+        header->magic=version;SetEvent(idle);
     }
     if(header && wait==WAIT_ABANDONED)header->blocked=1;
-    ReleaseMutex(mutex);
-    return header!=nullptr;
+    ReleaseMutex(mutex);return header!=nullptr;
 }
 struct Writer {
     std::vector<BYTE> bytes;
@@ -89,51 +106,129 @@ struct Reader {
         return result;
     }
 };
-// Caller holds Lock. These vectors are transaction-local copies, never another
-// independent history that could replay the same operation twice.
-static bool load() {
-    generation=header->generation;
-    if(header->blocked){lastError=L"Shared history was interrupted or could not be saved. Close all FilePilot windows to start a new history session.";return false;}
-    try {
-        if(!header->bytes){undoStack.clear();redoStack.clear();return true;}
-        if(header->bytes>capacity)throw std::bad_alloc();
-        Reader reader{(const BYTE*)(header+1),header->bytes};
-        auto undo=reader.stack(),redo=reader.stack();
-        if(reader.left)throw std::bad_alloc();
-        undoStack=std::move(undo);redoStack=std::move(redo);return true;
-    } catch(...) {header->blocked=1;lastError=L"Shared history could not be read.";return false;}
+
+static std::vector<BYTE> encode(Batch batch) {
+    std::vector<Batch> one;one.push_back(std::move(batch));
+    Writer writer;writer.stack(one);return std::move(writer.bytes);
 }
-static bool save() {
-    try {
-        Writer writer;writer.stack(undoStack);writer.stack(redoStack);
-        header->dirty=1;
-        memcpy(header+1,writer.bytes.data(),writer.bytes.size());
-        header->bytes=(DWORD)writer.bytes.size();
-        header->undoCount=(DWORD)undoStack.size();header->redoCount=(DWORD)redoStack.size();
-        header->generation=generation;header->dirty=0;
-        return true;
-    } catch(...) {header->blocked=1;header->dirty=0;lastError=L"Shared history capacity was exceeded or could not be saved.";return false;}
+static Batch decode(const std::vector<BYTE>& bytes) {
+    Reader reader{bytes.data(),bytes.size()};auto batches=reader.stack();
+    if(batches.size()!=1 || reader.left)throw std::bad_alloc();
+    return std::move(batches.front());
+}
+// Fixed pages avoid fragmentation and never relocate unrelated batches.
+// Caller owns the mutex and marks metadata dirty before changing page chains.
+static void releaseSlot(DWORD index) {
+    auto& slot=header->slots[index];
+    DWORD page=slot.first;
+    for(DWORD left=slot.bytes;left;) {
+        DWORD next=header->next[page];
+        header->next[page]=header->freePage;header->freePage=page;page=next;
+        left-=std::min(left,pageSize);
+    }
+    slot={};
+}
+static bool writeSlot(DWORD index,const std::vector<BYTE>& bytes) {
+    if(bytes.size()>capacity)return false;
+    releaseSlot(index);
+    auto& slot=header->slots[index];
+    DWORD previous=noPage;
+    size_t offset=0;
+    while(offset<bytes.size()) {
+        DWORD page=header->freePage;
+        if(page==noPage){releaseSlot(index);return false;}
+        header->freePage=header->next[page];header->next[page]=noPage;
+        if(previous==noPage)slot.first=page;else header->next[previous]=page;
+        size_t count=std::min(size_t(pageSize),bytes.size()-offset);
+        memcpy((BYTE*)(header+1)+size_t(page)*pageSize,bytes.data()+offset,count);
+        offset+=count;slot.bytes=(DWORD)offset;previous=page;
+    }
+    return true;
+}
+static std::vector<BYTE> readSlot(DWORD index) {
+    if(index>=100)throw std::bad_alloc();
+    auto slot=header->slots[index];
+    if(slot.bytes>capacity)throw std::bad_alloc();
+    std::vector<BYTE> bytes(slot.bytes);
+    DWORD page=slot.first;
+    for(size_t offset=0;offset<bytes.size();) {
+        if(page>=pageCount)throw std::bad_alloc();
+        size_t count=std::min(size_t(pageSize),bytes.size()-offset);
+        memcpy(bytes.data()+offset,(const BYTE*)(header+1)+size_t(page)*pageSize,count);
+        offset+=count;page=header->next[page];
+    }
+    return bytes;
 }
 static bool busy() {
-    bool result=false;
+    bool result=header->replayPid!=0;
     for(auto& entry:header->participants)if(entry.count) {
-        HANDLE process=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,entry.pid);
-        bool dead=process?WaitForSingleObject(process,0)==WAIT_OBJECT_0:GetLastError()==ERROR_INVALID_PARAMETER;
-        if(process)CloseHandle(process);
-        if(dead) {entry={};header->blocked=1;}
+        if(dead(entry.pid)){entry={};header->blocked=1;}
         else result=true;
     }
     return result;
 }
+static void append(Batch batch) {
+    auto bytes=encode(std::move(batch)); // Allocations and serialization outside mutex.
+    Lock lock;if(!lock.acquired || header->blocked)return;
+    header->dirty=1;
+    for(DWORD n=0;n<header->redoCount;++n)releaseSlot(header->redo[n]);
+    header->redoCount=0;
+    if(header->undoCount==100) {
+        releaseSlot(header->undo[0]);
+        memmove(header->undo,header->undo+1,99*sizeof(DWORD));--header->undoCount;
+    }
+    DWORD slot=0;while(slot<100 && header->slots[slot].bytes)++slot;
+    if(slot==100 || !writeSlot(slot,bytes))header->blocked=1;
+    else header->undo[header->undoCount++]=slot;
+    ++header->generation;header->dirty=0;
+}
+struct Reservation {
+    DWORD slot=0;bool held=false;
+    bool take(bool undo,unsigned long long expected,std::vector<BYTE>& bytes) {
+        Lock lock;if(!lock.acquired)return false;
+        if(busy()){error(L"A file operation is still running in another window.");return false;}
+        if(header->blocked){error(L"Shared history was interrupted. Close all FilePilot windows to start a new session.");return false;}
+        if(expected!=~0ULL && expected!=header->generation){error(L"Another operation completed before undo could start. Please try again.");return false;}
+        DWORD count=undo?header->undoCount:header->redoCount;
+        if(!count){error(L"No file operation to undo or redo.");return false;}
+        slot=(undo?header->undo:header->redo)[count-1];
+        bytes=readSlot(slot);
+        header->replayPid=GetCurrentProcessId();ResetEvent(idle);held=true;return true;
+    }
+    bool commit(bool undo,bool success,const std::vector<BYTE>& bytes) {
+        Lock lock;if(!lock.acquired)return false;
+        header->dirty=1;
+        bool saved=writeSlot(slot,bytes);
+        if(!saved)header->blocked=1;
+        else if(success) {
+            auto& from=undo?header->undoCount:header->redoCount;
+            auto& to=undo?header->redoCount:header->undoCount;
+            --from;(undo?header->redo:header->undo)[to++]=slot;
+        }
+        ++header->generation;header->dirty=0;header->replayPid=0;held=false;SetEvent(idle);
+        return saved;
+    }
+    ~Reservation() {
+        if(held){Lock lock;if(lock.acquired){header->blocked=1;header->replayPid=0;++header->generation;SetEvent(idle);}}
+    }
+};
 struct Activity {
     Participant* entry=nullptr;
     Activity() {
-        Lock lock;
-        if(!lock.acquired)return;
-        DWORD pid=GetCurrentProcessId();
-        for(auto& participant:header->participants)if(participant.pid==pid){entry=&participant;break;}
-        if(!entry)for(auto& participant:header->participants)if(!participant.count){entry=&participant;entry->pid=pid;break;}
-        if(entry)++entry->count;else header->blocked=1;
+        for(;;) {
+            {
+                Lock lock;if(!lock.acquired)throw std::bad_alloc();
+                if(!header->replayPid) {
+                    DWORD pid=GetCurrentProcessId();
+                    for(auto& p:header->participants)if(p.pid==pid){entry=&p;break;}
+                    if(!entry)for(auto& p:header->participants)if(!p.count){entry=&p;entry->pid=pid;break;}
+                    if(entry)++entry->count;else {header->blocked=1;throw std::bad_alloc();}
+                    return;
+                }
+            }
+            // Event wakes immediately on completion. Timeout only detects a dead owner.
+            WaitForSingleObject(idle,1000);
+        }
     }
     ~Activity(){if(entry){Lock lock;if(lock.acquired && entry->count)--entry->count;}}
 };

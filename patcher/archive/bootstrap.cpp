@@ -8,7 +8,21 @@ extern "C" __declspec(dllexport) volatile ArchiveBinding ArchiveBindings={};
 extern "C" void* __cdecl memset(void* dest,int value,size_t n){auto p=(volatile unsigned char*)dest;while(n--)*p++=(unsigned char)value;return dest;}
 extern "C" void* __cdecl memcpy(void* dest,const void* src,size_t n){auto p=(volatile unsigned char*)dest;auto q=(const volatile unsigned char*)src;while(n--)*p++=*q++;return dest;}
 static bool equal(const char* a,const char* b){while(*a && *a==*b){++a;++b;}return *a==*b;}
+using ImageLookup=PVOID(NTAPI*)(PVOID,PVOID*);
+static ImageLookup nativeImageLookup=nullptr;
+static BYTE* runtimeImage=nullptr;
+static SIZE_T runtimeSize=0;
+static void* loadedRuntime=nullptr;
+static PVOID NTAPI archiveImageLookup(PVOID address,PVOID* imageBase){
+    auto value=(ULONG_PTR)address;
+    if(runtimeImage && value>=(ULONG_PTR)runtimeImage && value-(ULONG_PTR)runtimeImage<runtimeSize){
+        if(imageBase)*imageBase=runtimeImage;
+        return runtimeImage;
+    }
+    return nativeImageLookup(address,imageBase);
+}
 static void* load(BYTE* host){
+    if(loadedRuntime)return loadedRuntime;
     auto library=*(decltype(&LoadLibraryW)*)(host+ArchiveBindings.loadLibraryRva);
     auto proc=*(decltype(&GetProcAddress)*)(host+ArchiveBindings.getProcRva);
     HMODULE kernel=library(L"kernel32.dll");
@@ -20,6 +34,7 @@ static void* load(BYTE* host){
     auto nt=(IMAGE_NT_HEADERS64*)(raw+((IMAGE_DOS_HEADER*)raw)->e_lfanew);
     BYTE* base=(BYTE*)alloc(nullptr,nt->OptionalHeader.SizeOfImage,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);
     if(!base)return nullptr;
+    runtimeImage=base;runtimeSize=nt->OptionalHeader.SizeOfImage;
     memcpy(base,raw,nt->OptionalHeader.SizeOfHeaders);
     auto section=IMAGE_FIRST_SECTION(nt);
     for(unsigned i=0;i<nt->FileHeader.NumberOfSections;++i)memcpy(base+section[i].VirtualAddress,raw+section[i].PointerToRawData,section[i].SizeOfRawData);
@@ -34,8 +49,16 @@ static void* load(BYTE* host){
         HMODULE module=library(name);if(!module)return nullptr;
         auto source=(IMAGE_THUNK_DATA64*)(base+d->OriginalFirstThunk);auto dest=(IMAGE_THUNK_DATA64*)(base+d->FirstThunk);
         for(;source->u1.AddressOfData;++source,++dest){LPCSTR symbol=IMAGE_SNAP_BY_ORDINAL64(source->u1.Ordinal)?(LPCSTR)IMAGE_ORDINAL64(source->u1.Ordinal):(LPCSTR)((IMAGE_IMPORT_BY_NAME*)(base+source->u1.AddressOfData))->Name;
-            dest->u1.Function=(ULONGLONG)proc(module,symbol);if(!dest->u1.Function)return nullptr;}
+            dest->u1.Function=(ULONGLONG)proc(module,symbol);if(!dest->u1.Function)return nullptr;
+            // /MT C++ EH calls this import to locate relative throw metadata.
+            // RtlAddFunctionTable alone does not register a loader-visible image.
+            if(!IMAGE_SNAP_BY_ORDINAL64(source->u1.Ordinal) && equal(symbol,"RtlPcToFileHeader")){
+                nativeImageLookup=(ImageLookup)dest->u1.Function;
+                dest->u1.Function=(ULONGLONG)&archiveImageLookup;
+            }
+        }
     }
+    if(!nativeImageLookup)return nullptr;
     auto exceptions=nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
     if(exceptions.Size && !functions((PRUNTIME_FUNCTION)(base+exceptions.VirtualAddress),exceptions.Size/sizeof(RUNTIME_FUNCTION),(DWORD64)base))return nullptr;
     for(unsigned i=0;i<nt->FileHeader.NumberOfSections;++i){DWORD bits=section[i].Characteristics;
@@ -48,7 +71,7 @@ static void* load(BYTE* host){
     auto exports=(IMAGE_EXPORT_DIRECTORY*)(base+nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
     auto names=(DWORD*)(base+exports->AddressOfNames);auto ordinals=(WORD*)(base+exports->AddressOfNameOrdinals);auto addresses=(DWORD*)(base+exports->AddressOfFunctions);
     for(DWORD i=0;i<exports->NumberOfNames;++i)if(equal((char*)(base+names[i]),"ArchiveInstall")){
-        ((void(WINAPI*)(BYTE*,const ArchiveBinding*))(base+addresses[ordinals[i]]))(host,const_cast<const ArchiveBinding*>(&ArchiveBindings));return base;}
+        ((void(WINAPI*)(BYTE*,const ArchiveBinding*))(base+addresses[ordinals[i]]))(host,const_cast<const ArchiveBinding*>(&ArchiveBindings));loadedRuntime=base;return base;}
     return nullptr;
 }
 extern "C" __declspec(dllexport) void __fastcall ArchiveStart(unsigned long long* config,void* output){

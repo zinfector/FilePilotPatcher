@@ -14,7 +14,31 @@ static std::wstring lower(std::wstring s) {
     if (!s.empty()) CharLowerBuffW(&s[0], (DWORD)s.size());
     return s;
 }
+bool recycleMetadataName(std::wstring_view name) {
+    return name.size()>2 && name[0]==L'$' && (name[1]==L'I'||name[1]==L'i');
+}
+bool recyclePath(std::wstring_view path) {
+    size_t start=0;
+    for(size_t i=0;i<=path.size();++i){
+        if(i!=path.size()&&path[i]!=L'\\'&&path[i]!=L'/')continue;
+        auto part=path.substr(start,i-start);
+        if(part.size()==12 && CompareStringOrdinal(part.data(),12,L"$Recycle.Bin",12,TRUE)==CSTR_EQUAL)return true;
+        start=i+1;
+    }
+    return false;
+}
+bool recycleMetadata(std::wstring_view path) {
+    if(!recyclePath(path))return false;
+    size_t start=0;
+    for(size_t i=0;i<=path.size();++i){
+        if(i!=path.size()&&path[i]!=L'\\'&&path[i]!=L'/')continue;
+        if(recycleMetadataName(path.substr(start,i-start)))return true;
+        start=i+1;
+    }
+    return false;
+}
 bool extension(std::wstring_view name) {
+    if(recycleMetadata(name))return false;
     auto p = name.find_last_of(L'.');
     if (p == std::wstring::npos) return false;
     const auto ext = name.substr(p);
@@ -27,6 +51,7 @@ bool extension(std::wstring_view name) {
     return false;
 }
 bool archivePath(std::wstring_view path,bool includeLeaf){
+    if(recycleMetadata(path))return false;
     size_t start=0;
     for(size_t i=0;i<=path.size();++i){
         if(i!=path.size()&&path[i]!=L'\\'&&path[i]!=L'/')continue;

@@ -36,6 +36,9 @@ struct Location {
     Entry entry;
 };
 bool extension(std::wstring_view name);
+bool recyclePath(std::wstring_view path);
+bool recycleMetadataName(std::wstring_view name);
+bool recycleMetadata(std::wstring_view path);
 // Lexical only: no allocation, filesystem access, or archive opening.
 bool archivePath(std::wstring_view path, bool includeLeaf = true);
 bool resolve(const wchar_t* path, Location& result);
